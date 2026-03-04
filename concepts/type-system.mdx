@@ -1,0 +1,677 @@
+---
+title: 'Type System'
+description: 'Complete reference for Cowrie data types and their wire encodings'
+---
+
+## Overview
+
+Cowrie Gen2 provides a rich type system that extends JSON with:
+
+- **14 core types** (null, bool, integers, floats, strings, bytes, collections)
+- **4 ML types** (tensors, images, audio, tensor references)
+- **3 delta/richtext types** (adjacency lists, rich text, semantic diffs)
+- **5 graph types** (nodes, edges, batches, shards)
+
+All types have explicit wire format tags and deterministic encoding rules.
+
+## Core Types (0x00-0x0F)
+
+### Null (0x00)
+
+Represents the absence of a value.
+
+**Wire Format:**
+```
+0x00  // Tag only
+```
+
+**Usage:**
+```rust
+let val = Value::Null;
+// Encodes to: [0x00]
+```
+
+---
+
+### Bool (0x01, 0x02)
+
+Boolean values have separate tags for `false` and `true`.
+
+**Wire Format:**
+```
+0x01  // False
+0x02  // True
+```
+
+**Usage:**
+```rust
+let f = Value::Bool(false);  // [0x01]
+let t = Value::Bool(true);   // [0x02]
+```
+
+<Tip>
+Using separate tags for booleans eliminates the need for a payload byte, saving space.
+</Tip>
+
+---
+
+### Int64 (0x03)
+
+Signed 64-bit integer with zigzag encoding.
+
+**Wire Format:**
+```
+Tag(0x03) | zigzag_varint
+```
+
+**Encoding:**
+```rust
+fn encode_int64(n: i64) -> Vec<u8> {
+    let mut buf = vec![0x03];
+    let zigzag = ((n << 1) ^ (n >> 63)) as u64;
+    write_uvarint(&mut buf, zigzag);
+    buf
+}
+```
+
+**Examples:**
+
+| Value | Zigzag | Varint | Wire Bytes |
+|-------|--------|--------|------------|
+| 0 | 0 | 00 | `03 00` |
+| 1 | 2 | 02 | `03 02` |
+| -1 | 1 | 01 | `03 01` |
+| 42 | 84 | 54 | `03 54` |
+| -42 | 83 | 53 | `03 53` |
+| 127 | 254 | FE 01 | `03 FE 01` |
+
+---
+
+### Uint64 (0x09)
+
+Unsigned 64-bit integer.
+
+**Wire Format:**
+```
+Tag(0x09) | varint
+```
+
+**Usage:**
+```rust
+let val = Value::Uint(1000);
+// Encodes to: [0x09, 0xE8, 0x07]
+```
+
+<Note>
+Use Uint64 for values that are always non-negative (counts, sizes, timestamps) to save encoding space compared to Int64.
+</Note>
+
+---
+
+### Float64 (0x04)
+
+IEEE 754 double-precision floating point.
+
+**Wire Format:**
+```
+Tag(0x04) | 8 bytes (little-endian)
+```
+
+**Example:**
+```rust
+let val = Value::Float(3.14159);
+// Encodes to: [0x04, 0x18, 0x2D, 0x44, 0x54, 0xFB, 0x21, 0x09, 0x40]
+```
+
+**Bit Layout:**
+```
+┌─┬───────────┬────────────────────────────────────────────────────┐
+│S│  Exponent │                    Mantissa                        │
+│1│   11 bits │                    52 bits                         │
+└─┴───────────┴────────────────────────────────────────────────────┘
+```
+
+---
+
+### Decimal128 (0x0A)
+
+High-precision decimal for financial/scientific applications.
+
+**Wire Format:**
+```
+Tag(0x0A) | scale:i8 | coefficient:16 bytes (big-endian)
+```
+
+**Representation:**
+```
+value = coefficient × 10^(-scale)
+```
+
+**Example:**
+```rust
+// Encode 123.45 with 2 decimal places
+let scale = 2;  // 2 decimal places
+let coef = 12345i128.to_be_bytes();  // 123.45 × 10^2
+let val = Value::Decimal(scale, coef);
+```
+
+**Use Cases:**
+- Currency amounts (e.g., $123.45)
+- Scientific measurements with exact precision
+- Avoiding floating-point rounding errors
+
+---
+
+### String (0x05)
+
+UTF-8 encoded text.
+
+**Wire Format:**
+```
+Tag(0x05) | length:varint | UTF-8 bytes
+```
+
+**Example:**
+```rust
+let val = Value::String("hello".to_string());
+// Encodes to: [0x05, 0x05, 0x68, 0x65, 0x6C, 0x6C, 0x6F]
+//              tag   len   'h'   'e'   'l'   'l'   'o'
+```
+
+**Validation:**
+- Must be valid UTF-8
+- Length ≤ MaxStringLen (default: 500 MB)
+- Decoder must reject invalid UTF-8 with `ERR_INVALID_UTF8`
+
+---
+
+### Bytes (0x08)
+
+Raw binary data (no encoding).
+
+**Wire Format:**
+```
+Tag(0x08) | length:varint | raw bytes
+```
+
+**Usage:**
+```rust
+let data = vec![0xDE, 0xAD, 0xBE, 0xEF];
+let val = Value::Bytes(data);
+// Encodes to: [0x08, 0x04, 0xDE, 0xAD, 0xBE, 0xEF]
+```
+
+**Use Cases:**
+- Binary blobs
+- Encrypted data
+- Compressed payloads
+- Arbitrary byte sequences
+
+---
+
+### Datetime64 (0x0B)
+
+Nanosecond-precision timestamp.
+
+**Wire Format:**
+```
+Tag(0x0B) | nanos:i64 (little-endian)
+```
+
+**Representation:**
+```
+nanos = nanoseconds since Unix epoch (1970-01-01T00:00:00Z)
+```
+
+**Example:**
+```rust
+use std::time::SystemTime;
+
+let now = SystemTime::now()
+    .duration_since(SystemTime::UNIX_EPOCH)
+    .unwrap()
+    .as_nanos() as i64;
+
+let val = Value::DateTime(now);
+```
+
+**Range:**
+- Min: ~1678 CE (i64::MIN nanos)
+- Max: ~2262 CE (i64::MAX nanos)
+
+<Tip>
+Datetime64 provides nanosecond precision, suitable for high-frequency trading, distributed tracing, and scientific measurements.
+</Tip>
+
+---
+
+### UUID128 (0x0C)
+
+RFC 4122 UUID (16 bytes).
+
+**Wire Format:**
+```
+Tag(0x0C) | 16 bytes
+```
+
+**Example:**
+```rust
+let uuid = [0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4,
+            0xa7, 0x16, 0x44, 0x66, 0x55, 0x44, 0x00, 0x00];
+let val = Value::Uuid(uuid);
+// Encodes to: [0x0C, ...16 bytes...]
+```
+
+**String Representation:**
+```
+550e8400-e29b-41d4-a716-446655440000
+```
+
+---
+
+### BigInt (0x0D)
+
+Arbitrary-precision integer.
+
+**Wire Format:**
+```
+Tag(0x0D) | length:varint | two's complement bytes (big-endian)
+```
+
+**Example:**
+```rust
+// Encode 2^256 - 1
+let bytes = vec![0xFF; 32];  // 256 bits of 1s
+let val = Value::BigInt(bytes);
+```
+
+**Use Cases:**
+- Cryptographic operations
+- Large integers beyond i64 range
+- Exact arithmetic without overflow
+
+---
+
+### Array (0x06)
+
+Ordered sequence of values (heterogeneous).
+
+**Wire Format:**
+```
+Tag(0x06) | count:varint | value[0] | value[1] | ... | value[count-1]
+```
+
+**Example:**
+```json
+[1, "hello", true, null]
+```
+
+```hex
+06              // Array tag
+04              // Count = 4
+03 02           // Int64: 1
+05 05 68 ... 6F // String: "hello"
+02              // True
+00              // Null
+```
+
+**Limits:**
+- Max count: MaxArrayLen (default: 100,000,000)
+- Max depth: MaxDepth (default: 1,000)
+
+---
+
+### Object (0x07)
+
+Key-value map with **dictionary-coded keys**.
+
+**Wire Format:**
+```
+Tag(0x07) | count:varint | (dictIndex:varint | value)*
+```
+
+**Example:**
+
+Given dictionary `["name", "age"]`:
+
+```json
+{"name": "Alice", "age": 30}
+```
+
+```hex
+07              // Object tag
+02              // Count = 2
+00              // Dict index 0 ("name")
+05 05 41 ... 65 // String: "Alice"
+01              // Dict index 1 ("age")
+03 3C           // Int64: 30
+```
+
+<Note>
+Keys are **always** encoded as dictionary indices in Gen2, never as raw strings. This provides 70-80% size savings for objects with repeated keys.
+</Note>
+
+---
+
+### Extension (0x0E)
+
+Forward-compatibility envelope for unknown types.
+
+**Wire Format:**
+```
+Tag(0x0E) | extType:varint | length:varint | payload:bytes
+```
+
+**Handling Unknown Extensions:**
+
+| Mode | Behavior |
+|------|----------|
+| **Keep** | Preserve type + payload for round-trip |
+| **Skip** | Decode as Null |
+| **Error** | Reject with ERR_UNKNOWN_EXTENSION |
+
+**Usage:**
+```rust
+// Future extension: TagMyType = 0x100
+let payload = vec![0x01, 0x02, 0x03];
+let val = Value::Ext(0x100, payload);
+```
+
+---
+
+## ML Types (0x20-0x23)
+
+### Tensor (0x20)
+
+Multi-dimensional array with dtype and shape.
+
+**Wire Format:**
+```
+Tag(0x20) | dtype:u8 | rank:u8 | dims:varint* | dataLen:varint | data:bytes
+```
+
+**DType Enum:**
+
+| Code | Type | Size | Description |
+|------|------|------|-------------|
+| 0x01 | float32 | 4 | IEEE 754 single |
+| 0x02 | float16 | 2 | IEEE 754 half |
+| 0x03 | bfloat16 | 2 | Brain float |
+| 0x04 | int8 | 1 | Signed 8-bit |
+| 0x05 | int16 | 2 | Signed 16-bit |
+| 0x06 | int32 | 4 | Signed 32-bit |
+| 0x07 | int64 | 8 | Signed 64-bit |
+| 0x08 | uint8 | 1 | Unsigned 8-bit |
+| 0x09 | uint16 | 2 | Unsigned 16-bit |
+| 0x0A | uint32 | 4 | Unsigned 32-bit |
+| 0x0B | uint64 | 8 | Unsigned 64-bit |
+| 0x0C | float64 | 8 | IEEE 754 double |
+
+**Example:**
+```rust
+// Encode a 2×3 float32 tensor: [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+let dtype = DType::Float32;  // 0x01
+let shape = vec![2, 3];
+let data = vec![
+    1.0f32.to_le_bytes(), 2.0f32.to_le_bytes(), 3.0f32.to_le_bytes(),
+    4.0f32.to_le_bytes(), 5.0f32.to_le_bytes(), 6.0f32.to_le_bytes(),
+].concat();
+
+let val = Value::Tensor(TensorData { dtype, dims: shape, data });
+```
+
+**Wire Bytes:**
+```hex
+20        // Tensor tag
+01        // dtype = float32
+02        // rank = 2
+02        // dim[0] = 2
+03        // dim[1] = 3
+18        // dataLen = 24 (6 floats × 4 bytes)
+00 00 80 3F ... // float32 data (LE)
+```
+
+---
+
+### TensorRef (0x21)
+
+Reference to external tensor storage.
+
+**Wire Format:**
+```
+Tag(0x21) | storeId:u8 | keyLen:varint | key:bytes
+```
+
+**Example:**
+```rust
+// Reference tensor in store 0 with key "embeddings/layer1"
+let val = Value::TensorRef(TensorRef {
+    store_id: 0,
+    key: b"embeddings/layer1".to_vec(),
+});
+```
+
+**Use Cases:**
+- Checkpoint sharding (avoid duplicating large tensors)
+- Out-of-core training (tensors on disk/S3)
+- Model serving (reference weights in model registry)
+
+---
+
+### Image (0x22)
+
+Compressed image data.
+
+**Wire Format:**
+```
+Tag(0x22) | format:u8 | width:u16 LE | height:u16 LE | dataLen:varint | data:bytes
+```
+
+**Image Formats:**
+
+| Code | Format |
+|------|--------|
+| 0x01 | JPEG |
+| 0x02 | PNG |
+| 0x03 | WebP |
+| 0x04 | AVIF |
+| 0x05 | BMP |
+
+**Example:**
+```rust
+let jpeg_data = std::fs::read("photo.jpg").unwrap();
+let val = Value::Image(ImageData {
+    format: ImageFormat::Jpeg,
+    width: 1920,
+    height: 1080,
+    data: jpeg_data,
+});
+```
+
+---
+
+### Audio (0x23)
+
+Compressed or raw audio data.
+
+**Wire Format:**
+```
+Tag(0x23) | encoding:u8 | sampleRate:u32 LE | channels:u8 | dataLen:varint | data:bytes
+```
+
+**Audio Encodings:**
+
+| Code | Encoding |
+|------|----------|
+| 0x01 | PCM Int16 |
+| 0x02 | PCM Float32 |
+| 0x03 | Opus |
+| 0x04 | AAC |
+
+**Example:**
+```rust
+// 16kHz mono PCM audio
+let pcm_samples: Vec<i16> = vec![...];
+let data = pcm_samples.iter()
+    .flat_map(|s| s.to_le_bytes())
+    .collect();
+
+let val = Value::Audio(AudioData {
+    encoding: AudioEncoding::PcmInt16,
+    sample_rate: 16000,
+    channels: 1,
+    data,
+});
+```
+
+---
+
+## Graph Types (0x30-0x39)
+
+### AdjList (0x30)
+
+CSR (Compressed Sparse Row) adjacency list for graphs.
+
+**Wire Format:**
+```
+Tag(0x30) | idWidth:u8 | nodeCount:varint | edgeCount:varint | 
+  rowOffsets:(nodeCount+1)×varint | colIndices:edgeCount×(4|8 bytes)
+```
+
+**IDWidth:**
+- `1` = int32 (4 bytes per index)
+- `2` = int64 (8 bytes per index)
+
+**Example (3 nodes, 4 edges):**
+```
+Graph: 0 → 1, 0 → 2, 1 → 2, 2 → 1
+
+rowOffsets: [0, 2, 3, 4]  // Node 0 has edges [0,2), node 1 has [2,3), etc.
+colIndices: [1, 2, 2, 1]  // Edge targets
+```
+
+---
+
+### Node (0x35)
+
+Graph node with string ID, labels, and properties.
+
+**Wire Format:**
+```
+Tag(0x35) | idLen:varint | idBytes | labelCount:varint | labels* | 
+  propCount:varint | (dictIdx:varint | value)*
+```
+
+**Example:**
+```json
+{
+  "id": "person_42",
+  "labels": ["Person", "Employee"],
+  "props": {"name": "Alice", "age": 30}
+}
+```
+
+If dictionary = `["name", "age"]`, properties encode as indices 0 and 1.
+
+---
+
+### Edge (0x36)
+
+Graph edge with source/destination IDs, type, and properties.
+
+**Wire Format:**
+```
+Tag(0x36) | srcLen:varint | srcBytes | dstLen:varint | dstBytes | 
+  typeLen:varint | typeBytes | propCount:varint | (dictIdx:varint | value)*
+```
+
+**Example:**
+```json
+{
+  "from": "person_42",
+  "to": "company_1",
+  "type": "WORKS_AT",
+  "props": {"since": 2020, "role": "Engineer"}
+}
+```
+
+---
+
+### NodeBatch (0x37) / EdgeBatch (0x38)
+
+Batches of nodes or edges for streaming GNN mini-batches.
+
+**Wire Format:**
+```
+Tag(0x37|0x38) | count:varint | Node[0] | Node[1] | ... | Node[count-1]
+```
+
+---
+
+### GraphShard (0x39)
+
+Self-contained subgraph with nodes, edges, and metadata.
+
+**Wire Format:**
+```
+Tag(0x39) | nodeCount:varint | Node* | edgeCount:varint | Edge* | 
+  metaCount:varint | (dictIdx:varint | value)*
+```
+
+**Use Cases:**
+- GNN mini-batch checkpointing
+- Distributed graph partitioning
+- Graph database snapshots
+
+---
+
+## Type Hierarchy
+
+```
+Value
+├─ Scalar
+│  ├─ Null (0x00)
+│  ├─ Bool (0x01, 0x02)
+│  ├─ Int64 (0x03)
+│  ├─ Uint64 (0x09)
+│  ├─ Float64 (0x04)
+│  ├─ Decimal128 (0x0A)
+│  ├─ Datetime64 (0x0B)
+│  ├─ UUID128 (0x0C)
+│  └─ BigInt (0x0D)
+├─ Binary
+│  ├─ String (0x05)
+│  └─ Bytes (0x08)
+├─ Collection
+│  ├─ Array (0x06)
+│  └─ Object (0x07)
+├─ ML
+│  ├─ Tensor (0x20)
+│  ├─ TensorRef (0x21)
+│  ├─ Image (0x22)
+│  └─ Audio (0x23)
+├─ Document
+│  ├─ RichText (0x31)
+│  └─ Delta (0x32)
+├─ Graph
+│  ├─ AdjList (0x30)
+│  ├─ Node (0x35)
+│  ├─ Edge (0x36)
+│  ├─ NodeBatch (0x37)
+│  ├─ EdgeBatch (0x38)
+│  └─ GraphShard (0x39)
+└─ Extension (0x0E)
+```
+
+## Summary
+
+Cowrie's type system provides:
+
+✅ **14 core types** covering all JSON use cases plus extensions  
+✅ **Exact precision** with Decimal128 and BigInt  
+✅ **Native binary** without base64 overhead  
+✅ **ML-native** types for tensors, images, and audio  
+✅ **Graph-native** types for GNN workloads  
+✅ **Forward compatibility** via Extension envelope  
+
+All types use explicit wire format tags and deterministic encoding, ensuring cross-language compatibility.

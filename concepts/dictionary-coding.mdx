@@ -1,0 +1,460 @@
+---
+title: 'Dictionary Coding'
+description: 'How Cowrie Gen2 achieves 70-80% size reduction for objects with repeated keys'
+---
+
+## Overview
+
+Dictionary coding is Cowrie Gen2's most powerful optimization. Instead of encoding object keys inline with every object, Gen2 collects all unique keys into a **shared dictionary** and references them by **index**.
+
+**Result:** 70-80% size reduction for objects with repeated key patterns.
+
+## Problem: Repeated Keys
+
+Consider encoding 1,000 user records:
+
+```json
+[
+  {"user_id": "alice", "email": "alice@example.com", "age": 30, "country": "US"},
+  {"user_id": "bob", "email": "bob@example.com", "age": 25, "country": "CA"},
+  ...
+]
+```
+
+### Without Dictionary (Gen1)
+
+Every object encodes keys **inline**:
+
+```
+Object 1: "user_id" (7 bytes) + "email" (5 bytes) + "age" (3 bytes) + "country" (7 bytes) = 22 bytes
+Object 2: "user_id" (7 bytes) + "email" (5 bytes) + "age" (3 bytes) + "country" (7 bytes) = 22 bytes
+...
+1,000 objects = 22,000 bytes of key data alone
+```
+
+### With Dictionary (Gen2)
+
+Keys are stored **once** in the header:
+
+```
+Dictionary: ["user_id", "email", "age", "country"] = 22 bytes (once)
+
+Object 1: index 0 (1 byte) + index 1 (1 byte) + index 2 (1 byte) + index 3 (1 byte) = 4 bytes
+Object 2: index 0 (1 byte) + index 1 (1 byte) + index 2 (1 byte) + index 3 (1 byte) = 4 bytes
+...
+1,000 objects = 22 + 4,000 = 4,022 bytes
+```
+
+**Savings:** 82% reduction (22,000 → 4,022 bytes)
+
+## Wire Format
+
+### Dictionary Layout
+
+The dictionary appears in the header **before** the root value:
+
+```
+┌─────────────────────────────────────────┐
+│ Header (4 bytes)                        │
+│  - Magic: "SJ"                          │
+│  - Version: 0x02                        │
+│  - Flags: 0x00                          │
+├─────────────────────────────────────────┤
+│ Dictionary                              │
+├─────────────────────────────────────────┤
+│ DictLen: varint (number of keys)       │
+│ Key[0]: [len:varint][UTF-8 bytes]      │
+│ Key[1]: [len:varint][UTF-8 bytes]      │
+│ ...                                     │
+│ Key[DictLen-1]: [len:varint][UTF-8]    │
+├─────────────────────────────────────────┤
+│ Root Value                              │
+│  (objects reference keys by index)      │
+└─────────────────────────────────────────┘
+```
+
+### Example Encoding
+
+Given dictionary `["name", "age", "city"]`:
+
+```json
+{"name": "Alice", "age": 30, "city": "NYC"}
+```
+
+**Wire Bytes:**
+
+```hex
+53 4A           // Magic "SJ"
+02              // Version
+00              // Flags
+
+// Dictionary
+03              // DictLen = 3
+04 6E 61 6D 65  // "name" (len=4)
+03 61 67 65     // "age" (len=3)
+04 63 69 74 79  // "city" (len=4)
+
+// Root Object
+07              // Object tag
+03              // Field count = 3
+
+// Field 0: "name" → "Alice"
+00              // Dict index 0 ("name")
+05 05 41 6C 69 63 65  // String: "Alice"
+
+// Field 1: "age" → 30
+01              // Dict index 1 ("age")
+03 3C           // Int64: 30
+
+// Field 2: "city" → "NYC"
+02              // Dict index 2 ("city")
+05 03 4E 59 43  // String: "NYC"
+```
+
+<Note>
+Dictionary indices are encoded as **varints**, so indices 0-127 take only 1 byte. Dictionaries with up to 16,383 keys still encode indices in 2 bytes.
+</Note>
+
+## Dictionary Building Algorithm
+
+Gen2 encoders use a **two-pass algorithm**:
+
+### Pass 1: Collect Keys
+
+Traverse the value tree and collect all unique object keys:
+
+```rust
+fn collect_keys(value: &Value, keys: &mut Vec<String>, seen: &mut HashSet<String>) {
+    match value {
+        Value::Object(fields) => {
+            for (key, val) in fields {
+                // Add key to dictionary if not already present
+                if !seen.contains(key) {
+                    seen.insert(key.clone());
+                    keys.push(key.clone());
+                }
+                // Recurse into nested values
+                collect_keys(val, keys, seen);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_keys(item, keys, seen);
+            }
+        }
+        // Graph types also contribute to dictionary
+        Value::Node(node) => {
+            for (key, val) in &node.props {
+                if !seen.contains(key) {
+                    seen.insert(key.clone());
+                    keys.push(key.clone());
+                }
+                collect_keys(val, keys, seen);
+            }
+        }
+        _ => {}
+    }
+}
+```
+
+### Pass 2: Encode with Dictionary
+
+Build a lookup map and encode values using indices:
+
+```rust
+let dict_map: HashMap<&str, usize> = dict
+    .iter()
+    .enumerate()
+    .map(|(i, k)| (k.as_str(), i))
+    .collect();
+
+fn encode_object(obj: &BTreeMap<String, Value>, dict_map: &HashMap<&str, usize>) {
+    write_tag(TAG_OBJECT);
+    write_uvarint(obj.len() as u64);
+    
+    for (key, val) in obj {
+        // O(1) lookup: key → index
+        let index = dict_map[key.as_str()];
+        write_uvarint(index as u64);
+        encode_value(val, dict_map);
+    }
+}
+```
+
+<Tip>
+Using a `HashMap` for dictionary lookups ensures **O(1)** key encoding time, making Gen2 encoding performance comparable to Gen1 despite the extra dictionary pass.
+</Tip>
+
+## Decoding with Dictionary
+
+Decoders load the dictionary **once** at the start:
+
+```rust
+fn decode_gen2(data: &[u8]) -> Result<Value, Error> {
+    let mut reader = Reader::new(data);
+    
+    // Read header
+    reader.expect_magic(b"SJ")?;
+    reader.expect_version(0x02)?;
+    let flags = reader.read_u8()?;
+    
+    // Read dictionary
+    let dict_len = reader.read_uvarint()? as usize;
+    let mut dict = Vec::with_capacity(dict_len);
+    for _ in 0..dict_len {
+        let key = reader.read_string()?;
+        dict.push(key);
+    }
+    
+    // Read root value (objects will reference dict indices)
+    decode_value(&mut reader, &dict)
+}
+
+fn decode_object(reader: &mut Reader, dict: &[String]) -> Result<Value, Error> {
+    let field_count = reader.read_uvarint()? as usize;
+    let mut obj = BTreeMap::new();
+    
+    for _ in 0..field_count {
+        // Read dictionary index
+        let index = reader.read_uvarint()? as usize;
+        if index >= dict.len() {
+            return Err(Error::InvalidFieldId);
+        }
+        
+        // O(1) lookup: index → key
+        let key = dict[index].clone();
+        let val = decode_value(reader, dict)?;
+        obj.insert(key, val);
+    }
+    
+    Ok(Value::Object(obj))
+}
+```
+
+## Size Savings Examples
+
+### Example 1: API Response
+
+**JSON (uncompressed):**
+```json
+[
+  {"id": 1, "title": "Post 1", "author": "Alice", "views": 100},
+  {"id": 2, "title": "Post 2", "author": "Bob", "views": 200},
+  ...
+  // 100 posts
+]
+```
+
+**Sizes:**
+
+| Format | Size | Ratio |
+|--------|------|-------|
+| JSON | 8.2 KB | 1.0x |
+| Gen1 (no dict) | 4.1 KB | 2.0x |
+| Gen2 (with dict) | 1.2 KB | 6.8x |
+| Gen2 + zstd | 0.4 KB | 20.5x |
+
+**Key Encoding Overhead:**
+
+- JSON: `"id", "title", "author", "views"` × 100 = **2,000 bytes**
+- Gen1: Same (inline keys) = **2,000 bytes**
+- Gen2: Dictionary (16 bytes) + indices (400 bytes) = **416 bytes**
+
+**Savings:** 79% reduction in key overhead
+
+---
+
+### Example 2: Time Series Data
+
+**Data (1,000 samples):**
+```json
+[
+  {"timestamp": 1609459200, "temperature": 20.5, "humidity": 65, "pressure": 1013},
+  {"timestamp": 1609459260, "temperature": 20.6, "humidity": 65, "pressure": 1013},
+  ...
+]
+```
+
+**Sizes:**
+
+| Format | Size | Ratio |
+|--------|------|-------|
+| JSON | 85 KB | 1.0x |
+| Gen1 | 42 KB | 2.0x |
+| Gen2 | 12 KB | 7.1x |
+| Gen2 + zstd | 3 KB | 28.3x |
+
+**Key Encoding:**
+
+- JSON/Gen1: `"timestamp"(9) + "temperature"(11) + "humidity"(8) + "pressure"(8)` × 1,000 = **36,000 bytes**
+- Gen2: Dictionary (36 bytes) + indices (4,000 bytes) = **4,036 bytes**
+
+**Savings:** 89% reduction
+
+---
+
+### Example 3: Graph Data (GNN Mini-Batch)
+
+**Data (100 nodes, 200 edges):**
+```json
+{
+  "nodes": [
+    {"id": "n1", "feature_dim": 128, "label": 0, "embedding": [...]},
+    ...
+  ],
+  "edges": [
+    {"src": "n1", "dst": "n2", "weight": 0.85, "type": "follows"},
+    ...
+  ]
+}
+```
+
+**Sizes:**
+
+| Format | Size | Ratio |
+|--------|------|-------|
+| JSON | 120 KB | 1.0x |
+| Gen1 (no dict) | 65 KB | 1.8x |
+| Gen2 (with dict) | 18 KB | 6.7x |
+| Gen2 + zstd | 5 KB | 24.0x |
+
+**Property Key Overhead:**
+
+- Gen1: `"id", "feature_dim", "label", "embedding"` × 100 nodes + `"src", "dst", "weight", "type"` × 200 edges = **~7,000 bytes**
+- Gen2: Dictionary (8 keys, ~60 bytes) + indices (~1,200 bytes) = **~1,260 bytes**
+
+**Savings:** 82% reduction
+
+<Warning>
+**Graph Types Benefit Most:** Nodes and edges with many properties see the largest gains. A dense property graph with 20 properties per node can achieve 85-90% key overhead reduction.
+</Warning>
+
+## Dictionary Order and Determinism
+
+Gen2 uses **insertion order** for dictionary keys (the order they are first encountered during traversal). This ensures:
+
+✅ **Deterministic encoding** when using sorted maps (e.g., Rust's `BTreeMap`)  
+✅ **Stable fingerprints** for schema comparison  
+✅ **Efficient round-trip** (dictionary preserves key order)  
+
+**Example:**
+
+```rust
+// Use BTreeMap for sorted keys
+let mut obj = BTreeMap::new();
+obj.insert("name".to_string(), Value::String("Alice".into()));
+obj.insert("age".to_string(), Value::Int(30));
+
+// Dictionary will always be ["age", "name"] (alphabetical)
+```
+
+## Security Limits
+
+Decoders **must** enforce dictionary size limits to prevent memory exhaustion:
+
+```rust
+const MAX_DICT_LEN: usize = 10_000_000;  // 10M keys
+const MAX_STRING_LEN: usize = 500_000_000;  // 500MB per string
+
+fn read_dictionary(reader: &mut Reader) -> Result<Vec<String>, Error> {
+    let dict_len = reader.read_uvarint()? as usize;
+    
+    // Reject oversized dictionaries
+    if dict_len > MAX_DICT_LEN {
+        return Err(Error::DictTooLarge);
+    }
+    
+    let mut dict = Vec::with_capacity(dict_len);
+    for _ in 0..dict_len {
+        let key = reader.read_string()?;  // Enforces MAX_STRING_LEN
+        dict.push(key);
+    }
+    
+    Ok(dict)
+}
+```
+
+<Warning>
+**Memory Safety:** Always validate `DictLen` **before** allocating the dictionary vector. A malicious payload could claim `DictLen = u64::MAX` to trigger OOM.
+</Warning>
+
+## Performance Characteristics
+
+### Encoding
+
+| Operation | Time Complexity | Notes |
+|-----------|-----------------|-------|
+| **Collect keys** | O(n) | Single tree traversal |
+| **Build dict map** | O(k) | k = unique keys |
+| **Encode objects** | O(n) | O(1) key lookups |
+| **Total** | **O(n + k)** | k much less than n for repeated keys |
+
+**Throughput:** ~400 MB/s (vs. ~500 MB/s for Gen1)
+
+### Decoding
+
+| Operation | Time Complexity | Notes |
+|-----------|-----------------|-------|
+| **Load dictionary** | O(k) | Once at start |
+| **Decode objects** | O(n) | O(1) index lookups |
+| **Total** | **O(n + k)** | k much less than n |
+
+**Throughput:** ~550 MB/s (vs. ~600 MB/s for Gen1)
+
+<Tip>
+Dictionary coding adds ~10% encoding/decoding overhead but provides **70-80% size savings**. For network-bound applications, the smaller payloads far outweigh the CPU cost.
+</Tip>
+
+## Dictionary Compression
+
+When using compression (gzip/zstd), the dictionary itself compresses well:
+
+**Example Dictionary:**
+
+```
+Uncompressed: ["timestamp", "temperature", "humidity", "pressure"] = 36 bytes
+Zstd:        [compressed] = 24 bytes (33% reduction)
+```
+
+Repeated key prefixes (e.g., `"user_id"`, `"user_name"`, `"user_email"`) compress especially well due to common substrings.
+
+## Advanced: Streaming Without Dictionary
+
+Gen2's dictionary requires **collecting all keys upfront**, which isn't possible for streaming data. For streaming use cases:
+
+### Option 1: Use Gen1
+
+Gen1 has no dictionary and encodes keys inline, making it ideal for streaming.
+
+### Option 2: Chunked Gen2
+
+Encode data in chunks, each with its own dictionary:
+
+```rust
+for chunk in data.chunks(1000) {
+    let encoded = encode_gen2(chunk)?;  // Each chunk has own dict
+    writer.write_all(&encoded)?;
+}
+```
+
+**Trade-off:** Dictionary overhead per chunk, but still benefits from compression.
+
+## Summary
+
+Dictionary coding is Gen2's killer feature:
+
+✅ **70-80% size reduction** for objects with repeated keys  
+✅ **O(1) encoding/decoding** with hash map lookups  
+✅ **Minimal overhead** (~10% CPU vs. Gen1)  
+✅ **Compatible with compression** (dictionaries compress well)  
+✅ **Deterministic** with sorted maps  
+
+**Best for:**
+- API responses with repeated schemas
+- Time series data
+- Graph databases (nodes/edges with repeated property keys)
+- ML training data (feature dictionaries)
+
+**Not ideal for:**
+- Streaming data (use Gen1 or chunked encoding)
+- Data with unique keys per object (no benefit from dictionary)

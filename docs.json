@@ -1,122 +1,124 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Cowrie",
+  "theme": "sequoia",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#3B82F6",
+    "light": "#60A5FA",
+    "dark": "#1E40AF"
   },
   "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/Neumenon/cowrie"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/Neumenon/cowrie"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Getting Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "installation"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/gen1-vs-gen2",
+              "concepts/wire-format",
+              "concepts/type-system",
+              "concepts/dictionary-coding"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Language SDKs",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "sdks/go",
+              "sdks/rust",
+              "sdks/python",
+              "sdks/typescript",
+              "sdks/c"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Advanced Features",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "advanced/graph-types",
+              "advanced/ml-types",
+              "advanced/streaming",
+              "advanced/compression",
+              "advanced/security-limits"
+            ]
+          },
+          {
+            "group": "CLI Tool",
+            "pages": [
+              "cli/overview",
+              "cli/encode",
+              "cli/decode",
+              "cli/info"
+            ]
+          },
+          {
+            "group": "Performance",
+            "pages": [
+              "performance/benchmarks",
+              "performance/optimization",
+              "performance/comparison"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Gen1 API",
             "pages": [
-              "api-reference/introduction"
+              "api/gen1/encode-decode",
+              "api/gen1/types",
+              "api/gen1/streaming"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Gen2 API",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/gen2/encode-decode",
+              "api/gen2/types",
+              "api/gen2/extended-types",
+              "api/gen2/compression",
+              "api/gen2/column-reader"
+            ]
+          },
+          {
+            "group": "Graph API",
+            "pages": [
+              "api/graph/nodes-edges",
+              "api/graph/batches",
+              "api/graph/shards"
+            ]
+          },
+          {
+            "group": "ML API",
+            "pages": [
+              "api/ml/tensors",
+              "api/ml/images",
+              "api/ml/audio"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

@@ -1,0 +1,493 @@
+---
+title: 'ML Types'
+description: 'Tensor, Image, and Audio types for machine learning workloads'
+---
+
+Cowrie provides native support for machine learning data types, enabling efficient encoding of tensors, images, and audio without base64 bloat or JSON overhead.
+
+## Tensor
+
+Multi-dimensional arrays for neural network weights, embeddings, and features.
+
+### Wire Format (Tag 0x20)
+
+```
+Tag(0x20) | dtype:u8 | rank:u8 | dims:varint* | dataLen:varint | data:bytes
+```
+
+### Structure
+
+```go
+type TensorData struct {
+    DType DType      // Data type (float32, int32, etc.)
+    Dims  []uint64   // Shape dimensions
+    Data  []byte     // Raw tensor bytes, row-major
+}
+```
+
+### Data Types
+
+| Code | Type | Size | Use Case |
+|------|------|------|----------|
+| 0x01 | float32 | 4 bytes | Embeddings, weights |
+| 0x02 | float16 | 2 bytes | Mixed-precision training |
+| 0x03 | bfloat16 | 2 bytes | TPU/GPU optimization |
+| 0x0C | float64 | 8 bytes | High-precision scientific |
+| 0x04 | int8 | 1 byte | Quantized models |
+| 0x05 | int16 | 2 bytes | Audio samples |
+| 0x06 | int32 | 4 bytes | Indices, labels |
+| 0x07 | int64 | 8 bytes | Large indices |
+| 0x08 | uint8 | 1 byte | Images (0-255) |
+| 0x09 | uint16 | 2 bytes | 16-bit images |
+| 0x0A | uint32 | 4 bytes | Large counters |
+| 0x0B | uint64 | 8 bytes | Large identifiers |
+| 0x0D | bool | 1 byte | Binary masks |
+
+### Quantized Types
+
+| Code | Type | Bits | Use Case |
+|------|------|------|----------|
+| 0x10 | qint4 | 4 bits | Extreme compression |
+| 0x11 | qint2 | 2 bits | Binary neural networks |
+| 0x12 | qint3 | 3 bits | Ternary quantization |
+| 0x13 | ternary | ~1.58 bits | {-1, 0, 1} weights |
+| 0x14 | binary | 1 bit | {0, 1} features |
+
+### Example: Float32 Embeddings
+
+```go
+import "github.com/Neumenon/cowrie"
+
+// Create 768-dimensional embedding
+embedding := []float32{0.1, 0.2, 0.3, /* ... 768 values */}
+
+tensor := cowrie.Tensor(
+    cowrie.DTypeFloat32,
+    []uint64{768},  // 1D shape
+    toBytes(embedding),
+)
+
+// Encode
+data, err := cowrie.Encode(tensor)
+
+// Decode and access
+val, err := cowrie.Decode(data)
+tensorData := val.Tensor()
+
+// Zero-copy view (no allocation!)
+floats, ok := tensorData.ViewFloat32()
+if ok {
+    fmt.Println(floats[0])  // 0.1
+}
+```
+
+### Example: 2D Tensor (Batch Embeddings)
+
+```go
+// Batch of 32 embeddings, each 768-dim
+batchSize := uint64(32)
+embeddingDim := uint64(768)
+data := make([]float32, batchSize * embeddingDim)
+
+tensor := cowrie.Tensor(
+    cowrie.DTypeFloat32,
+    []uint64{batchSize, embeddingDim},  // 2D shape
+    toBytes(data),
+)
+```
+
+### Example: Image Tensor (uint8)
+
+```go
+// RGB image: 224x224x3
+height, width, channels := uint64(224), uint64(224), uint64(3)
+pixels := make([]byte, height * width * channels)
+
+tensor := cowrie.Tensor(
+    cowrie.DTypeUint8,
+    []uint64{height, width, channels},
+    pixels,
+)
+```
+
+### Zero-Copy Views
+
+Access tensor data without allocation:
+
+```go
+tensorData := val.Tensor()
+
+// Float32 view
+if floats, ok := tensorData.ViewFloat32(); ok {
+    // Direct memory access to underlying []float32
+    sum := float32(0)
+    for _, f := range floats {
+        sum += f
+    }
+}
+
+// Float64 view
+if doubles, ok := tensorData.ViewFloat64(); ok {
+    // High-precision access
+}
+
+// Int32 view
+if ints, ok := tensorData.ViewInt32(); ok {
+    // Label indices, etc.
+}
+
+// Uint8 view (always succeeds)
+bytes, _ := tensorData.ViewUint8()
+```
+
+### Security Limits
+
+```go
+opts := cowrie.DecodeOptions{
+    MaxRank:     32,              // Maximum tensor dimensions
+    MaxBytesLen: 1_000_000_000,   // Max 1GB tensor data
+}
+```
+
+Default limits support ML workloads while preventing memory exhaustion:
+
+- **MaxRank**: 32 dimensions (enough for 4D batches + attention heads)
+- **MaxBytesLen**: 1GB per tensor (supports ~250M float32 values)
+
+## TensorRef
+
+Reference to a stored tensor (deduplication, lazy loading).
+
+### Wire Format (Tag 0x21)
+
+```
+Tag(0x21) | storeId:u8 | keyLen:varint | key:bytes
+```
+
+### Structure
+
+```go
+type TensorRefData struct {
+    StoreID uint8   // Which store/shard (0-255)
+    Key     []byte  // Lookup key (UUID, hash, content address)
+}
+```
+
+### Example
+
+```go
+// Reference tensor by content hash
+hash := sha256.Sum256(tensorData)
+ref := cowrie.TensorRef(0, hash[:])
+
+// Store original tensor separately
+// Client fetches on demand or caches locally
+```
+
+### Use Cases
+
+- **Deduplication**: Multiple references to same tensor
+- **Lazy Loading**: Fetch large tensors only when needed
+- **Content Addressing**: IPFS/Merkle DAG integration
+- **Distributed Storage**: Shard tensors across workers
+
+## Image
+
+Encoded image data with format and dimensions.
+
+### Wire Format (Tag 0x22)
+
+```
+Tag(0x22) | format:u8 | width:u16 LE | height:u16 LE | dataLen:varint | data:bytes
+```
+
+### Structure
+
+```go
+type ImageData struct {
+    Format ImageFormat  // Image format
+    Width  uint16       // Width in pixels (max 65535)
+    Height uint16       // Height in pixels (max 65535)
+    Data   []byte       // Encoded image bytes
+}
+```
+
+### Image Formats
+
+| Code | Format | Use Case |
+|------|--------|----------|
+| 0x01 | JPEG | Photos, lossy compression |
+| 0x02 | PNG | Lossless, transparency |
+| 0x03 | WebP | Modern web images |
+| 0x04 | AVIF | Next-gen compression |
+| 0x05 | BMP | Raw pixel data |
+
+### Example
+
+```go
+// Load JPEG file
+jpegData, err := os.ReadFile("photo.jpg")
+
+image := cowrie.Image(
+    cowrie.ImageFormatJPEG,
+    1920,  // width
+    1080,  // height
+    jpegData,
+)
+
+// Encode with other data
+payload := cowrie.Object(
+    cowrie.Member{Key: "id", Value: cowrie.String("img_123")},
+    cowrie.Member{Key: "image", Value: image},
+    cowrie.Member{Key: "caption", Value: cowrie.String("Sunset")},
+)
+
+data, err := cowrie.Encode(payload)
+
+// Decode and access
+val, err := cowrie.Decode(data)
+imgData := val.Get("image").Image()
+fmt.Println(imgData.Format)  // JPEG
+fmt.Println(imgData.Width)   // 1920
+fmt.Println(imgData.Height)  // 1080
+// Write image data to file
+os.WriteFile("decoded.jpg", imgData.Data, 0644)
+```
+
+### Advantages over Base64
+
+```json
+// JSON with base64 (bloated)
+{
+  "image": "data:image/jpeg;base64,/9j/4AAQSkZJRg..." // 33% size overhead
+}
+
+// Cowrie (efficient)
+{
+  "image": <Image 0x22 JPEG 1920x1080 [binary data]>
+}
+```
+
+**Size comparison** (1MB JPEG):
+- JSON + base64: ~1.33MB
+- Cowrie: ~1.00MB + 7 bytes overhead
+- **Savings**: ~25%
+
+### Compression
+
+Images are already compressed, so enable Gen2 compression only for mixed payloads:
+
+```go
+opts := cowrie.EncodeOptions{
+    Compression: cowrie.CompressionZstd,
+}
+data, err := cowrie.EncodeWithOptions(payload, opts)
+```
+
+Zstd won't re-compress JPEG data but will compress text/tensor fields efficiently.
+
+## Audio
+
+Audio data with encoding, sample rate, and channels.
+
+### Wire Format (Tag 0x23)
+
+```
+Tag(0x23) | encoding:u8 | sampleRate:u32 LE | channels:u8 | dataLen:varint | data:bytes
+```
+
+### Structure
+
+```go
+type AudioData struct {
+    Encoding   AudioEncoding  // Audio encoding
+    SampleRate uint32         // Sample rate in Hz
+    Channels   uint8          // Number of channels (1=mono, 2=stereo)
+    Data       []byte         // Audio data bytes
+}
+```
+
+### Audio Encodings
+
+| Code | Encoding | Use Case |
+|------|----------|----------|
+| 0x01 | PCM Int16 | Raw audio, CD quality |
+| 0x02 | PCM Float32 | High-quality processing |
+| 0x03 | Opus | Low-latency streaming |
+| 0x04 | AAC | Music, podcasts |
+
+### Example: PCM Audio
+
+```go
+// 1 second of 16-bit stereo audio at 44.1kHz
+sampleRate := uint32(44100)
+channels := uint8(2)
+samples := make([]int16, sampleRate * 2) // 2 channels
+
+// Convert to bytes (little-endian)
+audioData := int16ToBytes(samples)
+
+audio := cowrie.Audio(
+    cowrie.AudioEncodingPCMInt16,
+    sampleRate,
+    channels,
+    audioData,
+)
+```
+
+### Example: Opus Compressed Audio
+
+```go
+// Load Opus file
+opusData, err := os.ReadFile("speech.opus")
+
+audio := cowrie.Audio(
+    cowrie.AudioEncodingOPUS,
+    48000,  // 48kHz
+    1,      // mono
+    opusData,
+)
+
+// Encode with metadata
+payload := cowrie.Object(
+    cowrie.Member{Key: "audio", Value: audio},
+    cowrie.Member{Key: "transcript", Value: cowrie.String("Hello world")},
+    cowrie.Member{Key: "duration", Value: cowrie.Float64(2.5)},
+)
+```
+
+### Sample Rate Guidelines
+
+| Rate | Use Case |
+|------|----------|
+| 8kHz | Phone calls |
+| 16kHz | Voice assistants |
+| 44.1kHz | CD audio, music |
+| 48kHz | Video, professional |
+| 96kHz+ | High-res audio |
+
+## Performance Best Practices
+
+### Tensor Optimization
+
+1. **Use Appropriate dtype**: float16 for embeddings, int8 for quantized models
+2. **Batch Tensors**: Combine multiple tensors into one payload
+3. **Zero-Copy Views**: Use `ViewFloat32()` instead of converting to `[]any`
+4. **Align Dimensions**: Powers of 2 for GPU efficiency
+
+```go
+// Good: Single batch tensor
+tensor := cowrie.Tensor(cowrie.DTypeFloat32, []uint64{32, 768}, batchData)
+
+// Avoid: 32 separate tensors
+for i := 0; i < 32; i++ {
+    tensor := cowrie.Tensor(cowrie.DTypeFloat32, []uint64{768}, data[i])
+}
+```
+
+### Image Optimization
+
+1. **Pre-compress**: Use JPEG/WebP/AVIF before encoding
+2. **Avoid Re-encoding**: Store original encoded bytes
+3. **Thumbnail Strategy**: Send small preview first, full image on demand
+
+```go
+// Good: Store original JPEG
+image := cowrie.Image(cowrie.ImageFormatJPEG, width, height, jpegBytes)
+
+// Avoid: Decode -> re-encode (quality loss)
+pixels := decodeJPEG(jpegBytes)
+image := cowrie.Tensor(cowrie.DTypeUint8, []uint64{h, w, 3}, pixels)
+```
+
+### Audio Optimization
+
+1. **Use Lossy Compression**: Opus for speech, AAC for music
+2. **Stream Audio**: Split long audio into chunks
+3. **Downsample**: 16kHz for speech recognition (44.1kHz not needed)
+
+## Integration Examples
+
+### PyTorch
+
+```python
+import torch
+import cowrie
+
+# Export PyTorch tensor
+tensor = torch.randn(32, 768)
+data = cowrie.Tensor(
+    dtype=cowrie.DTypeFloat32,
+    dims=[32, 768],
+    data=tensor.numpy().tobytes()
+)
+
+# Import to PyTorch
+tensor = torch.frombuffer(data.data, dtype=torch.float32).view(32, 768)
+```
+
+### NumPy
+
+```python
+import numpy as np
+import cowrie
+
+# Export NumPy array
+arr = np.random.randn(100, 50).astype(np.float32)
+data = cowrie.Tensor(
+    dtype=cowrie.DTypeFloat32,
+    dims=arr.shape,
+    data=arr.tobytes()
+)
+
+# Import from Cowrie
+arr = np.frombuffer(data.data, dtype=np.float32).reshape(data.dims)
+```
+
+### TensorFlow
+
+```python
+import tensorflow as tf
+import cowrie
+
+# Export TF tensor
+tensor = tf.random.normal([64, 512])
+data = cowrie.Tensor(
+    dtype=cowrie.DTypeFloat32,
+    dims=tensor.shape.as_list(),
+    data=tensor.numpy().tobytes()
+)
+```
+
+## Security Considerations
+
+ML types respect security limits to prevent DoS attacks:
+
+```go
+opts := cowrie.DecodeOptions{
+    MaxBytesLen: 1_000_000_000,  // 1GB max per tensor/image/audio
+    MaxRank:     32,              // 32D max (tensors only)
+}
+```
+
+See [Security Limits](/advanced/security-limits) for configuration.
+
+## Size Comparison
+
+**Example**: 768-dim float32 embedding
+
+- JSON: `[0.1, 0.2, ...]` → ~6KB (text)
+- Cowrie Tensor: 3072 bytes data + 8 bytes overhead = **3080 bytes**
+- **Savings**: ~50%
+
+**Example**: 1920x1080 JPEG image
+
+- JSON + base64: ~1.33MB
+- Cowrie Image: 1.00MB + 7 bytes = **1.00MB**
+- **Savings**: ~25%
+
+## Related Topics
+
+- [Graph Types](/advanced/graph-types) - Node/edge feature tensors
+- [Streaming](/advanced/streaming) - Stream large tensors efficiently
+- [Compression](/advanced/compression) - Compress mixed tensor+text payloads

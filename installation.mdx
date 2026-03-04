@@ -1,0 +1,384 @@
+---
+title: Installation
+description: Install Cowrie in your language of choice - Go, Rust, Python, TypeScript, or C
+---
+
+Cowrie is available for five languages, each with both Gen1 and Gen2 support. Choose your language below for installation instructions.
+
+## Go
+
+<Steps>
+
+<Step title="Install via go get">
+  ```bash
+  go get github.com/phenomenon0/cowrie-final/go/gen1
+  go get github.com/phenomenon0/cowrie-final/go/gen2
+  ```
+</Step>
+
+<Step title="Import in your code">
+  ```go
+  import (
+      "github.com/phenomenon0/cowrie-final/go/gen1"
+      "github.com/phenomenon0/cowrie-final/go/gen2"
+  )
+  ```
+</Step>
+
+<Step title="Verify installation">
+  ```bash
+  cd go
+  go test ./...
+  ```
+</Step>
+
+</Steps>
+
+### Requirements
+
+- Go 1.21 or later
+- github.com/klauspost/compress (automatically installed)
+
+### Building from source
+
+```bash
+git clone https://github.com/phenomenon0/cowrie-final
+cd cowrie-final/go
+go build ./...
+go test ./...
+```
+
+## Rust
+
+<Steps>
+
+<Step title="Add to Cargo.toml">
+  ```toml
+  [dependencies]
+  cowrie-codec = "0.1.0"
+  ```
+  
+  Or for specific features:
+  ```toml
+  [dependencies]
+  cowrie-codec = { version = "0.1.0", features = ["gen1", "gen2", "zstd"] }
+  ```
+</Step>
+
+<Step title="Import in your code">
+  ```rust
+  use cowrie::{gen1, gen2};
+  ```
+</Step>
+
+<Step title="Build your project">
+  ```bash
+  cargo build
+  ```
+</Step>
+
+</Steps>
+
+### Features
+
+- `gen1`: Enable Gen1 codec (included by default)
+- `gen2`: Enable Gen2 codec (included by default)
+- `zstd`: Enable zstd compression support for Gen2
+
+### Building from source
+
+```bash
+git clone https://github.com/phenomenon0/cowrie-final
+cd cowrie-final/rust
+cargo build
+cargo test
+```
+
+## Python
+
+<Steps>
+
+<Step title="Install via pip">
+  ```bash
+  pip install cowrie
+  ```
+</Step>
+
+<Step title="Import in your code">
+  ```python
+  from cowrie import gen1, gen2
+  ```
+</Step>
+
+<Step title="Verify installation">
+  ```bash
+  python -c "from cowrie import gen1, gen2; print('Cowrie installed successfully')"
+  ```
+</Step>
+
+</Steps>
+
+### Requirements
+
+- Python 3.8 or later
+- No external dependencies required
+
+### Building from source
+
+```bash
+git clone https://github.com/phenomenon0/cowrie-final
+cd cowrie-final/python
+pip install -e .
+pytest tests/
+```
+
+<Tip>
+Use `-e` flag for editable installation during development.
+</Tip>
+
+## TypeScript / Node.js
+
+<Tabs>
+  <Tab title="npm">
+    ```bash
+    npm install cowrie
+    ```
+  </Tab>
+  <Tab title="yarn">
+    ```bash
+    yarn add cowrie
+    ```
+  </Tab>
+  <Tab title="pnpm">
+    ```bash
+    pnpm add cowrie
+    ```
+  </Tab>
+</Tabs>
+
+### Usage
+
+<Steps>
+
+<Step title="Import in your TypeScript/JavaScript code">
+  ```typescript
+  import { gen1, gen2 } from 'cowrie';
+  ```
+  
+  Or with CommonJS:
+  ```javascript
+  const { gen1, gen2 } = require('cowrie');
+  ```
+</Step>
+
+<Step title="Verify installation">
+  ```bash
+  node -e "const {gen1} = require('cowrie'); console.log('Cowrie installed')"
+  ```
+</Step>
+
+</Steps>
+
+### Requirements
+
+- Node.js 16 or later
+- Optional: fzstd for zstd compression support (auto-installed)
+
+### Building from source
+
+```bash
+git clone https://github.com/phenomenon0/cowrie-final
+cd cowrie-final/typescript
+npm install
+npm run build
+npm test
+```
+
+## C
+
+C installation requires building from source with CMake.
+
+<Steps>
+
+<Step title="Install dependencies">
+  ```bash
+  # Ubuntu/Debian
+  sudo apt-get install build-essential cmake zlib1g-dev libzstd-dev
+  
+  # macOS
+  brew install cmake zlib zstd
+  
+  # Fedora/RHEL
+  sudo dnf install gcc cmake zlib-devel libzstd-devel
+  ```
+</Step>
+
+<Step title="Build with CMake">
+  ```bash
+  git clone https://github.com/phenomenon0/cowrie-final
+  cd cowrie-final/c
+  mkdir build && cd build
+  cmake ..
+  make
+  ```
+</Step>
+
+<Step title="Run tests">
+  ```bash
+  ctest
+  ```
+</Step>
+
+<Step title="Install libraries">
+  ```bash
+  sudo make install
+  ```
+</Step>
+
+</Steps>
+
+### Include in your project
+
+```c
+#include <cowrie_gen1.h>
+#include <cowrie_gen2.h>
+```
+
+### CMake integration
+
+Add to your `CMakeLists.txt`:
+
+```cmake
+find_package(cowrie REQUIRED)
+target_link_libraries(your_target cowrie_gen1 cowrie_gen2)
+```
+
+### Requirements
+
+- C11-compatible compiler (GCC 7+, Clang 5+, MSVC 2019+)
+- CMake 3.10 or later
+- zlib (required for Gen2)
+- libzstd (optional for Gen2 zstd compression)
+
+<Note>
+zstd support is optional. If libzstd is not found, Cowrie will build without zstd compression support.
+</Note>
+
+## CLI tool
+
+Cowrie includes a command-line tool for encoding/decoding from the terminal:
+
+<Steps>
+
+<Step title="Build the CLI">
+  ```bash
+  cd go
+  go build -o cowrie ./cmd/cowrie
+  ```
+</Step>
+
+<Step title="Encode JSON to Cowrie">
+  ```bash
+  echo '{"name":"Alice","age":30}' | ./cowrie encode --gen2 > data.cowrie
+  ```
+</Step>
+
+<Step title="Decode Cowrie to JSON">
+  ```bash
+  ./cowrie decode < data.cowrie
+  ```
+</Step>
+
+<Step title="Inspect Cowrie files">
+  ```bash
+  ./cowrie info < data.cowrie
+  ```
+</Step>
+
+</Steps>
+
+### CLI options
+
+```bash
+# Encode with Gen1
+cowrie encode --gen1 < input.json > output.cowrie
+
+# Encode with Gen2 and compression
+cowrie encode --gen2 --compress --compression=zstd < input.json > output.cowrie
+
+# Decode to pretty-printed JSON
+cowrie decode --pretty < input.cowrie
+
+# Show file info (format, size, compression)
+cowrie info < input.cowrie
+```
+
+## Docker
+
+Run Cowrie in a container:
+
+```bash
+docker run -it --rm \
+  -v $(pwd):/data \
+  ghcr.io/phenomenon0/cowrie:latest \
+  encode --gen2 < /data/input.json > /data/output.cowrie
+```
+
+<Warning>
+Docker images are built from the Go implementation only. For other languages, install natively.
+</Warning>
+
+## Verification
+
+After installation, verify Cowrie is working correctly:
+
+<CodeGroup>
+
+```bash Go
+cd go
+go test ./gen1 ./gen2
+```
+
+```bash Rust
+cd rust
+cargo test
+```
+
+```bash Python
+cd python
+pytest tests/
+```
+
+```bash TypeScript
+cd typescript
+npm test
+```
+
+```bash C
+cd c/build
+ctest
+```
+
+</CodeGroup>
+
+All tests should pass. If you encounter issues, check that you have the required dependencies installed.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Encode your first message with Cowrie
+  </Card>
+  <Card title="API Reference" icon="book" href="/api/gen1/encode-decode">
+    Explore the full API documentation
+  </Card>
+</CardGroup>
+
+## Getting help
+
+If you encounter installation issues:
+
+1. Check the [GitHub Issues](https://github.com/phenomenon0/cowrie-final/issues) for known problems
+2. Verify you have the required language version and dependencies
+3. Try building from source for the latest fixes
+4. Open a new issue with your error message and environment details

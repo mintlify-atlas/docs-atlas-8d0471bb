@@ -1,0 +1,111 @@
+---
+title: CLI Overview
+description: Introduction to the Cowrie command-line interface for encoding and decoding binary JSON
+---
+
+## What is the Cowrie CLI?
+
+The Cowrie CLI is a command-line tool that provides easy access to Cowrie's binary JSON encoding and decoding capabilities. It supports both Gen1 (lightweight, stdlib-only) and Gen2 (full-featured with ML extensions) codecs, along with optional compression.
+
+## Installation
+
+Build the CLI tool from source using Go:
+
+```bash
+cd workspace/source/go/cmd/cowrie
+go build -o cowrie
+```
+
+This creates a `cowrie` binary that you can move to your PATH:
+
+```bash
+sudo mv cowrie /usr/local/bin/
+```
+
+Or run directly:
+
+```bash
+./cowrie --help
+```
+
+## Basic Usage
+
+The Cowrie CLI has three main commands:
+
+- **encode** - Convert JSON to Cowrie binary format
+- **decode** - Convert Cowrie binary back to JSON
+- **info** - Display metadata about a Cowrie file
+
+### Quick Examples
+
+Encode JSON to binary:
+```bash
+echo '{"name":"Alice","age":30}' | cowrie encode --gen2 > data.cowrie
+```
+
+Decode binary to JSON:
+```bash
+cowrie decode < data.cowrie
+```
+
+Get file information:
+```bash
+cowrie info < data.cowrie
+```
+
+## Command Structure
+
+```
+cowrie <command> [flags] < input > output
+```
+
+All commands read from stdin and write to stdout, making them perfect for Unix pipelines.
+
+## Available Commands
+
+| Command | Description |
+|---------|-------------|
+| `encode` | Encode JSON to Cowrie binary format |
+| `decode` | Decode Cowrie binary to JSON |
+| `info` | Display information about a Cowrie file |
+| `help` | Show usage information |
+
+## Codec Versions
+
+### Gen1 Codec
+- Lightweight implementation
+- Uses only Go standard library
+- Fast and minimal dependencies
+- Good for simple use cases
+
+### Gen2 Codec (Default)
+- Full Cowrie v2 specification
+- ML optimization support
+- Compression options (gzip, zstd)
+- Advanced features and extensions
+
+By default, all commands use Gen2. Use the `--gen1` flag to explicitly use Gen1.
+
+## Common Workflows
+
+### Encode with Compression
+```bash
+cat large.json | cowrie encode --gen2 --compress=zstd > data.cowrie.zst
+```
+
+### Round-trip Pipeline
+```bash
+echo '{"test":true}' | cowrie encode --gen2 | cowrie decode
+```
+
+### Inspect Before Decoding
+```bash
+cowrie info < mystery.cowrie
+cowrie decode < mystery.cowrie > output.json
+```
+
+## Next Steps
+
+- [Encode Command](/cli/encode) - Learn about encoding options and compression
+- [Decode Command](/cli/decode) - Understand decoding and format detection
+- [Info Command](/cli/info) - Explore metadata inspection features

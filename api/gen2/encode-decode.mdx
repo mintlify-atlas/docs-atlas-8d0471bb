@@ -1,0 +1,562 @@
+---
+title: 'Encode & Decode'
+description: 'Core Gen2 encoding and decoding functions'
+icon: 'arrow-right-arrow-left'
+---
+
+## Overview
+
+Cowrie Gen2 provides efficient binary encoding with dictionary-coded keys, optional compression, and forward-compatible extension types.
+
+## Encoding Functions
+
+### Encode
+
+```go
+func Encode(v *Value) ([]byte, error)
+```
+
+Encodes a Cowrie value to Gen2 binary format.
+
+<ParamField path="v" type="*Value" required>
+  The value to encode
+</ParamField>
+
+<ResponseField name="data" type="[]byte">
+  Encoded binary data with Gen2 header and dictionary
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if encoding fails (e.g., unsupported type)
+</ResponseField>
+
+**Wire format:**
+
+```
+Magic:   'S' 'J'     (2 bytes)
+Version: 0x02        (1 byte)
+Flags:   0x00        (1 byte)
+DictLen: uvarint
+Dict:    DictLen × [len:uvarint][utf8 bytes]
+RootVal: encoded value
+```
+
+**Example:**
+
+```go
+obj := cowrie.Object(
+    cowrie.Member{Key: "name", Value: cowrie.String("Alice")},
+    cowrie.Member{Key: "age", Value: cowrie.Int64(30)},
+)
+
+data, err := cowrie.Encode(obj)
+if err != nil {
+    log.Fatal(err)
+}
+// data contains Gen2 binary with dictionary ["name", "age"]
+```
+
+---
+
+### EncodeAppend
+
+```go
+func EncodeAppend(dst []byte, v *Value) ([]byte, error)
+```
+
+Encodes a value and appends to an existing buffer. Useful for avoiding allocations when managing buffers manually.
+
+<ParamField path="dst" type="[]byte" required>
+  Destination buffer to append to
+</ParamField>
+
+<ParamField path="v" type="*Value" required>
+  Value to encode
+</ParamField>
+
+<ResponseField name="result" type="[]byte">
+  Buffer with encoded data appended
+</ResponseField>
+
+**Example:**
+
+```go
+buf := make([]byte, 0, 1024)
+buf, err := cowrie.EncodeAppend(buf, cowrie.Int64(42))
+```
+
+---
+
+### EncodeTo
+
+```go
+func EncodeTo(w io.Writer, v *Value) error
+```
+
+Encodes a value directly to an `io.Writer`.
+
+<ParamField path="w" type="io.Writer" required>
+  Writer to output encoded data
+</ParamField>
+
+<ParamField path="v" type="*Value" required>
+  Value to encode
+</ParamField>
+
+**Example:**
+
+```go
+file, _ := os.Create("data.cowrie")
+defer file.Close()
+err := cowrie.EncodeTo(file, myValue)
+```
+
+---
+
+### EncodeWithOptions
+
+```go
+func EncodeWithOptions(v *Value, opts EncodeOptions) ([]byte, error)
+```
+
+Encodes a value with explicit options for deterministic output and null omission.
+
+<ParamField path="v" type="*Value" required>
+  Value to encode
+</ParamField>
+
+<ParamField path="opts" type="EncodeOptions" required>
+  Encoding options
+</ParamField>
+
+**EncodeOptions fields:**
+
+<ParamField path="Deterministic" type="bool">
+  Sorts object keys lexicographically for reproducible output. Essential for hashing, caching, and content addressing.
+</ParamField>
+
+<ParamField path="OmitNull" type="bool">
+  Excludes null values from encoded objects. Useful for sparse data and reducing payload size.
+</ParamField>
+
+**Example:**
+
+```go
+opts := cowrie.EncodeOptions{
+    Deterministic: true,  // Stable output for content hashing
+    OmitNull: true,       // Skip null fields
+}
+data, err := cowrie.EncodeWithOptions(myValue, opts)
+```
+
+---
+
+### EncodeWithHints
+
+```go
+func EncodeWithHints(v *Value, hints []ColumnHint) ([]byte, error)
+```
+
+Encodes a value with column hints for columnar optimization. See [ColumnReader](/api/gen2/column-reader) for details.
+
+<ParamField path="v" type="*Value" required>
+  Value to encode
+</ParamField>
+
+<ParamField path="hints" type="[]ColumnHint" required>
+  Column hints for selective field access
+</ParamField>
+
+**Example:**
+
+```go
+hints := []cowrie.ColumnHint{
+    cowrie.NewHint("id", cowrie.HintInt64, cowrie.HintFlagRequired),
+    cowrie.NewTensorHint("embedding", cowrie.HintFloat32, []int{128}, cowrie.HintFlagColumnar),
+}
+data, err := cowrie.EncodeWithHints(arrayValue, hints)
+```
+
+---
+
+## Decoding Functions
+
+### Decode
+
+```go
+func Decode(data []byte) (*Value, error)
+```
+
+Decodes Gen2 binary data into a Cowrie value. Uses default security limits to prevent memory exhaustion.
+
+<ParamField path="data" type="[]byte" required>
+  Encoded binary data
+</ParamField>
+
+<ResponseField name="value" type="*Value">
+  Decoded Cowrie value
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if decoding fails (invalid magic, version, or malformed data)
+</ResponseField>
+
+**Example:**
+
+```go
+val, err := cowrie.Decode(data)
+if err != nil {
+    log.Fatal(err)
+}
+
+if val.Type() == cowrie.TypeObject {
+    name := val.Get("name").String()
+    fmt.Println("Name:", name)
+}
+```
+
+---
+
+### DecodeWithOptions
+
+```go
+func DecodeWithOptions(data []byte, opts DecodeOptions) (*Value, error)
+```
+
+Decodes with custom security limits and extension handling.
+
+<ParamField path="data" type="[]byte" required>
+  Encoded binary data
+</ParamField>
+
+<ParamField path="opts" type="DecodeOptions" required>
+  Security limits and options
+</ParamField>
+
+**DecodeOptions fields:**
+
+<ParamField path="MaxDepth" type="int" default="1000">
+  Maximum nesting depth for arrays/objects
+</ParamField>
+
+<ParamField path="MaxArrayLen" type="int" default="100000000">
+  Maximum array element count (100M)
+</ParamField>
+
+<ParamField path="MaxObjectLen" type="int" default="10000000">
+  Maximum object field count (10M)
+</ParamField>
+
+<ParamField path="MaxStringLen" type="int" default="500000000">
+  Maximum string byte length (500MB)
+</ParamField>
+
+<ParamField path="MaxBytesLen" type="int" default="1000000000">
+  Maximum bytes length (1GB, also applies to tensor/image/audio data)
+</ParamField>
+
+<ParamField path="MaxExtLen" type="int" default="100000000">
+  Maximum TagExt payload length (100MB)
+</ParamField>
+
+<ParamField path="MaxDictLen" type="int" default="10000000">
+  Maximum dictionary entries (10M)
+</ParamField>
+
+<ParamField path="MaxHintCount" type="int" default="10000">
+  Maximum column hints (10K)
+</ParamField>
+
+<ParamField path="MaxRank" type="int" default="32">
+  Maximum tensor rank/dimensions
+</ParamField>
+
+<ParamField path="OnUnknownExt" type="UnknownExtBehavior" default="UnknownExtKeep">
+  Behavior for unknown TagExt extensions:
+  - `UnknownExtKeep`: Preserve as UnknownExtData (default, enables round-tripping)
+  - `UnknownExtSkipAsNull`: Skip and return Null
+  - `UnknownExtError`: Return error in strict mode
+</ParamField>
+
+**Example:**
+
+```go
+opts := cowrie.DecodeOptions{
+    MaxDepth: 500,
+    MaxArrayLen: 1000000,
+    OnUnknownExt: cowrie.UnknownExtSkipAsNull,
+}
+val, err := cowrie.DecodeWithOptions(data, opts)
+```
+
+---
+
+### DecodeFrom
+
+```go
+func DecodeFrom(rd io.Reader) (*Value, error)
+```
+
+Decodes from an `io.Reader`. Reads entire input into memory.
+
+<Tip>For untrusted input, use `DecodeFromLimited` to prevent OOM attacks.</Tip>
+
+**Example:**
+
+```go
+file, _ := os.Open("data.cowrie")
+defer file.Close()
+val, err := cowrie.DecodeFrom(file)
+```
+
+---
+
+### DecodeFromLimited
+
+```go
+func DecodeFromLimited(rd io.Reader, maxBytes int64) (*Value, error)
+```
+
+Decodes from an `io.Reader` with a size limit. Returns `ErrInputTooLarge` if input exceeds `maxBytes`.
+
+<ParamField path="rd" type="io.Reader" required>
+  Reader to decode from
+</ParamField>
+
+<ParamField path="maxBytes" type="int64" required>
+  Maximum input size in bytes
+</ParamField>
+
+**Example:**
+
+```go
+// Limit to 10MB
+val, err := cowrie.DecodeFromLimited(resp.Body, 10*1024*1024)
+if err == cowrie.ErrInputTooLarge {
+    return fmt.Errorf("response too large")
+}
+```
+
+---
+
+### DecodeWithHints
+
+```go
+func DecodeWithHints(data []byte) (*HintResult, error)
+```
+
+Decodes data and returns both the value and any embedded column hints.
+
+<ResponseField name="HintResult.Value" type="*Value">
+  Decoded value
+</ResponseField>
+
+<ResponseField name="HintResult.Hints" type="[]ColumnHint">
+  Column hints (nil if none present)
+</ResponseField>
+
+**Example:**
+
+```go
+result, err := cowrie.DecodeWithHints(data)
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, hint := range result.Hints {
+    fmt.Printf("Field %s: type=%s\n", hint.Field, hint.Type)
+}
+```
+
+---
+
+## Compression Functions
+
+### EncodeFramed
+
+```go
+func EncodeFramed(v *Value, comp Compression) ([]byte, error)
+```
+
+Encodes with optional compression. Automatically skips compression if payload is too small or compression doesn't help.
+
+<ParamField path="v" type="*Value" required>
+  Value to encode
+</ParamField>
+
+<ParamField path="comp" type="Compression" required>
+  Compression type:
+  - `CompressionNone` (0)
+  - `CompressionGzip` (1)
+  - `CompressionZstd` (2)
+</ParamField>
+
+**Compression flags (byte 3 of header):**
+
+- Bit 0: `FlagCompressed` (0x01) - data is compressed
+- Bits 1-2: Compression type (0=none, 1=gzip, 2=zstd)
+- Bit 3: `FlagHasColumnHints` (0x08) - column hints present
+
+**Framing format (when compressed):**
+
+```
+Header (4 bytes): Magic + Version + Flags
+OrigLen: uvarint (uncompressed size)
+CompressedPayload: bytes
+```
+
+**Example:**
+
+```go
+// Encode with zstd compression
+data, err := cowrie.EncodeFramed(largeValue, cowrie.CompressionZstd)
+
+// Small payloads may skip compression automatically
+if data[3] & cowrie.FlagCompressed == 0 {
+    fmt.Println("Compression skipped (not beneficial)")
+}
+```
+
+---
+
+### DecodeFramed
+
+```go
+func DecodeFramed(data []byte) (*Value, error)
+```
+
+Decodes with automatic decompression. Uses default 1GB decompressed size limit.
+
+<ParamField path="data" type="[]byte" required>
+  Encoded data (compressed or uncompressed)
+</ParamField>
+
+**Example:**
+
+```go
+// Automatically detects and decompresses if needed
+val, err := cowrie.DecodeFramed(data)
+```
+
+---
+
+### DecodeFramedWithLimit
+
+```go
+func DecodeFramedWithLimit(data []byte, maxDecompressedSize int) (*Value, error)
+```
+
+Decodes with custom decompressed size limit. Returns `ErrDecompressedTooLarge` if claimed decompressed size exceeds limit.
+
+<ParamField path="data" type="[]byte" required>
+  Encoded data
+</ParamField>
+
+<ParamField path="maxDecompressedSize" type="int" required>
+  Maximum decompressed size (prevents decompression bombs)
+</ParamField>
+
+**Example:**
+
+```go
+// Limit decompressed size to 100MB
+val, err := cowrie.DecodeFramedWithLimit(data, 100*1024*1024)
+if err == cowrie.ErrDecompressedTooLarge {
+    return fmt.Errorf("decompression bomb detected")
+}
+```
+
+---
+
+## Error Types
+
+**Decoding errors:**
+
+- `ErrInvalidMagic` - Magic bytes != 'SJ'
+- `ErrInvalidVersion` - Version != 0x02
+- `ErrUnexpectedEOF` - Truncated data
+- `ErrInvalidTag` - Unknown type tag
+- `ErrInvalidFieldID` - Field ID >= dictionary length
+- `ErrInvalidVarint` - Malformed or overflow varint
+
+**Security limit errors:**
+
+- `ErrMalformedLength` - Length exceeds remaining data
+- `ErrDepthExceeded` - Nesting depth > MaxDepth
+- `ErrArrayTooLarge` - Array length > MaxArrayLen
+- `ErrObjectTooLarge` - Object fields > MaxObjectLen
+- `ErrStringTooLarge` - String length > MaxStringLen
+- `ErrBytesTooLarge` - Bytes length > MaxBytesLen
+- `ErrExtTooLarge` - Extension payload > MaxExtLen
+- `ErrDictTooLarge` - Dictionary size > MaxDictLen
+- `ErrInputTooLarge` - Input exceeds size limit
+- `ErrDecompressedTooLarge` - Decompressed size exceeds limit
+- `ErrUnknownExt` - Unknown extension in strict mode
+
+**Type-specific errors:**
+
+- `ErrInvalidDType` - Invalid tensor dtype
+- `ErrInvalidImgFormat` - Invalid image format
+- `ErrInvalidAudioEnc` - Invalid audio encoding
+- `ErrInvalidIDWidth` - Invalid adjacency list ID width
+- `ErrInvalidDeltaOp` - Invalid delta opcode
+
+---
+
+## Dictionary Coding
+
+Gen2 uses dictionary coding for object keys to reduce payload size:
+
+1. **Encoding**: All unique keys are collected and stored in the header dictionary
+2. **Objects**: Reference keys by dictionary index (varint) instead of inline strings
+3. **Graph types**: Node/Edge property keys also use the shared dictionary
+
+**Example wire format:**
+
+```json
+{"name": "Alice", "age": 30}
+{"name": "Bob", "age": 25}
+```
+
+**Encoded as:**
+
+```
+Dictionary: ["name", "age"]
+Object 1: {0: "Alice", 1: 30}
+Object 2: {0: "Bob", 1: 25}
+```
+
+**Size savings**: 70-80% reduction for repeated property schemas in arrays of objects.
+
+---
+
+## Best Practices
+
+### Performance
+
+- Use `EncodeAppend` with pre-allocated buffers to avoid allocations
+- Enable `Deterministic` mode only when needed (adds sorting overhead)
+- Use compression for payloads > 256 bytes (automatic threshold)
+- Prefer zstd over gzip for better compression ratios
+
+### Security
+
+- Always use `DecodeFromLimited` for untrusted network input
+- Set appropriate `MaxBytesLen` for tensor/image data in your domain
+- Use `UnknownExtError` mode if forward compatibility isn't needed
+- Validate decompressed size limits to prevent decompression bombs
+
+### Compatibility
+
+- Use `OnUnknownExt = UnknownExtKeep` (default) for round-tripping
+- Preserve unknown extensions when proxying/forwarding data
+- Check magic bytes 'SJ' to distinguish Gen2 from Gen1 format
+
+---
+
+## See Also
+
+- [Core Types](/api/gen2/types) - Type tags and value constructors
+- [Extended Types](/api/gen2/extended-types) - ML and graph extensions
+- [Compression](/api/gen2/compression) - Detailed compression formats
+- [ColumnReader](/api/gen2/column-reader) - Selective field access

@@ -1,0 +1,443 @@
+---
+title: 'Wire Format'
+description: 'Deep dive into Cowrie binary encoding structure'
+---
+
+## Format Structure
+
+Cowrie Gen2 uses a header-dictionary-value structure:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Header (4+ bytes)                                       │
+├─────────────────────────────────────────────────────────┤
+│ Magic: "SJ" (0x53 0x4A)                                 │
+│ Version: 0x02                                           │
+│ Flags: 0xXX                                             │
+├─────────────────────────────────────────────────────────┤
+│ [Column Hints] (optional, if FlagHasColumnHints set)   │
+├─────────────────────────────────────────────────────────┤
+│ Dictionary                                              │
+├─────────────────────────────────────────────────────────┤
+│ DictLen: varint                                         │
+│ Keys: DictLen × [len:varint][UTF-8 bytes]              │
+├─────────────────────────────────────────────────────────┤
+│ Root Value (recursive encoding)                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+## Magic Bytes
+
+Cowrie Gen2 files start with the ASCII characters `"SJ"` (Structured JSON):
+
+```hex
+53 4A  // "SJ" magic header
+```
+
+<Warning>
+Gen1 format has **no magic header** and starts directly with the root value type tag. Always check the first two bytes to distinguish formats.
+</Warning>
+
+## Header Layout
+
+### Byte-by-Byte Breakdown
+
+| Offset | Field | Type | Description |
+|--------|-------|------|-------------|
+| 0-1 | Magic | 2 bytes | `0x53 0x4A` ("SJ") |
+| 2 | Version | u8 | Format version (0x02) |
+| 3 | Flags | u8 | Bitfield (see below) |
+
+### Header Flags
+
+Flags are bit-packed in byte 3:
+
+| Bit(s) | Name | Value | Description |
+|--------|------|-------|-------------|
+| 0 | Compressed | 0x01 | Payload is compressed |
+| 1-2 | Compression Type | 0x02/0x04 | 0=none, 1=gzip, 2=zstd |
+| 3 | Has Column Hints | 0x08 | Column hints present after flags |
+| 4-7 | Reserved | - | Must be zero |
+
+**Example Flag Values:**
+
+```rust
+0x00  // No compression, no hints
+0x01  // Compressed (type in bits 1-2)
+0x03  // Compressed with gzip (0x01 | (1 << 1))
+0x05  // Compressed with zstd (0x01 | (2 << 1))
+0x08  // Column hints present
+0x09  // Column hints + compressed
+```
+
+## Varint Encoding
+
+Cowrie uses Protocol Buffers-style unsigned varint encoding:
+
+- **7 bits per byte** for data
+- **MSB (bit 7)** as continuation flag:
+  - `1` = more bytes follow
+  - `0` = last byte
+
+### Encoding Algorithm
+
+```rust
+fn encode_uvarint(n: u64) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let mut val = n;
+    loop {
+        let mut byte = (val & 0x7F) as u8;
+        val >>= 7;
+        if val != 0 {
+            byte |= 0x80;  // Set continuation bit
+        }
+        buf.push(byte);
+        if val == 0 {
+            break;
+        }
+    }
+    buf
+}
+```
+
+### Decoding Algorithm
+
+```rust
+fn decode_uvarint(data: &[u8]) -> Result<(u64, usize), Error> {
+    let mut result = 0u64;
+    let mut shift = 0;
+    for (i, &byte) in data.iter().enumerate() {
+        result |= ((byte & 0x7F) as u64) << shift;
+        if (byte & 0x80) == 0 {
+            return Ok((result, i + 1));  // Return (value, bytes_read)
+        }
+        shift += 7;
+        if shift >= 64 {
+            return Err(Error::VarIntOverflow);
+        }
+    }
+    Err(Error::UnexpectedEof)
+}
+```
+
+### Encoding Examples
+
+| Value | Bytes | Explanation |
+|-------|-------|-------------|
+| 0 | `00` | Single byte, no continuation |
+| 127 | `7F` | Max single-byte value |
+| 128 | `80 01` | 0b10000000 → 0b0000001 0000000 |
+| 300 | `AC 02` | 0b10101100 0b00000010 → 0b00000010 0101100 |
+| 16,384 | `80 80 01` | 3 bytes |
+
+<Tip>
+Varints are optimized for small numbers. Values 0-127 take 1 byte, 128-16,383 take 2 bytes, etc.
+</Tip>
+
+## Zigzag Encoding
+
+Signed integers use zigzag encoding before varint encoding:
+
+```rust
+fn zigzag_encode(n: i64) -> u64 {
+    ((n << 1) ^ (n >> 63)) as u64
+}
+
+fn zigzag_decode(z: u64) -> i64 {
+    ((z >> 1) ^ (-(z & 1) as u64)) as i64
+}
+```
+
+### Zigzag Mapping
+
+| Signed | Zigzag | Explanation |
+|--------|--------|-------------|
+| 0 | 0 | Unchanged |
+| -1 | 1 | Maps to 1 |
+| 1 | 2 | Maps to 2 |
+| -2 | 3 | Maps to 3 |
+| 2 | 4 | Maps to 4 |
+| -64 | 127 | Fits in 1 byte |
+
+<Note>
+Zigzag encoding ensures small negative numbers (like -1, -2) encode as small varints, rather than large 64-bit values.
+</Note>
+
+## Type Tags
+
+Every value is prefixed with a type tag (1 byte):
+
+### Core Types (0x00-0x0F)
+
+| Tag | Type | Encoding |
+|-----|------|----------|
+| 0x00 | Null | Tag only |
+| 0x01 | False | Tag only |
+| 0x02 | True | Tag only |
+| 0x03 | Int64 | Tag + zigzag varint |
+| 0x04 | Float64 | Tag + 8 bytes LE |
+| 0x05 | String | Tag + len:varint + UTF-8 |
+| 0x06 | Array | Tag + count:varint + elements |
+| 0x07 | Object | Tag + count:varint + (dictIdx:varint + value)* |
+| 0x08 | Bytes | Tag + len:varint + raw bytes |
+| 0x09 | Uint64 | Tag + varint |
+| 0x0A | Decimal128 | Tag + scale:i8 + coef:16 bytes |
+| 0x0B | Datetime64 | Tag + nanos:i64 LE |
+| 0x0C | UUID128 | Tag + 16 bytes |
+| 0x0D | BigInt | Tag + len:varint + two's complement bytes |
+| 0x0E | Extension | Tag + extType:varint + len:varint + payload |
+
+### ML Types (0x20-0x2F)
+
+| Tag | Type | Encoding |
+|-----|------|----------|
+| 0x20 | Tensor | dtype:u8 + rank:u8 + dims* + dataLen:varint + data |
+| 0x21 | TensorRef | storeId:u8 + keyLen:varint + key |
+| 0x22 | Image | format:u8 + width:u16 + height:u16 + dataLen:varint + data |
+| 0x23 | Audio | encoding:u8 + sampleRate:u32 + channels:u8 + dataLen:varint + data |
+
+### Graph Types (0x30-0x39)
+
+| Tag | Type | Encoding |
+|-----|------|----------|
+| 0x30 | AdjList | idWidth:u8 + nodeCount + edgeCount + rowOffsets + colIndices |
+| 0x31 | RichText | text + flags:u8 + tokens + spans |
+| 0x32 | Delta | baseId:varint + opCount:varint + ops |
+| 0x35 | Node | id:string + labels* + props (dict-coded) |
+| 0x36 | Edge | srcId + dstId + type + props (dict-coded) |
+| 0x37 | NodeBatch | count:varint + Node[count] |
+| 0x38 | EdgeBatch | count:varint + Edge[count] |
+| 0x39 | GraphShard | nodes + edges + metadata (dict-coded) |
+
+## Encoding Examples
+
+### Null
+
+```hex
+00  // Tag only
+```
+
+### Boolean
+
+```hex
+01  // False
+02  // True
+```
+
+### Int64
+
+```
+Value: 42
+Zigzag: 84 (42 << 1)
+Varint: 0x54
+
+Wire format: 03 54
+```
+
+```
+Value: -1
+Zigzag: 1 ((-1 << 1) ^ (-1 >> 63))
+Varint: 0x01
+
+Wire format: 03 01
+```
+
+### Float64
+
+```
+Value: 3.14159
+IEEE 754: 0x400921FB54442D18 (little-endian)
+
+Wire format: 04 18 2D 44 54 FB 21 09 40
+```
+
+### String
+
+```
+Value: "hello"
+Length: 5
+UTF-8: 68 65 6C 6C 6F
+
+Wire format: 05 05 68 65 6C 6C 6F
+             │  │  └──────┬──────┘
+             │  │      UTF-8 bytes
+             │  └─ Length (varint)
+             └─ Tag
+```
+
+### Array
+
+```json
+[1, 2, 3]
+```
+
+```hex
+06        // Array tag
+03        // Count = 3
+03 02     // Int64: 1 (zigzag: 2)
+03 04     // Int64: 2 (zigzag: 4)
+03 06     // Int64: 3 (zigzag: 6)
+```
+
+### Object (Dictionary-Coded)
+
+Given dictionary `["name", "age"]`:
+
+```json
+{"name": "Alice", "age": 30}
+```
+
+```hex
+07              // Object tag
+02              // Field count = 2
+00              // Dict index 0 ("name")
+05 05 41 6C 69 63 65  // String: "Alice"
+01              // Dict index 1 ("age")
+03 3C           // Int64: 30 (zigzag: 60)
+```
+
+<Tip>
+Object keys are encoded as dictionary indices (usually 1 byte) instead of full strings, providing massive size savings.
+</Tip>
+
+## Compression Framing
+
+When the `Compressed` flag (0x01) is set:
+
+```
+┌─────────────────────────────────────────┐
+│ Header (4 bytes)                        │
+│  - Magic: "SJ"                          │
+│  - Version: 0x02                        │
+│  - Flags: 0x03 (compressed + gzip)      │
+├─────────────────────────────────────────┤
+│ OrigLen: varint                         │
+│  (uncompressed payload size)            │
+├─────────────────────────────────────────┤
+│ Compressed Payload                      │
+│  (dictionary + root value, compressed)  │
+└─────────────────────────────────────────┘
+```
+
+### Compression Algorithm
+
+```rust
+fn encode_compressed(value: &Value, compression: Compression) -> Vec<u8> {
+    // 1. Encode uncompressed payload
+    let mut payload = Vec::new();
+    encode_dictionary(&mut payload);
+    encode_value(&mut payload, value);
+    
+    // 2. Compress payload
+    let compressed = match compression {
+        Compression::Gzip => gzip_compress(&payload),
+        Compression::Zstd => zstd_compress(&payload),
+        _ => panic!("Invalid compression type"),
+    };
+    
+    // 3. Build result
+    let mut result = Vec::new();
+    result.extend_from_slice(b"SJ");  // Magic
+    result.push(VERSION);              // Version
+    result.push(compression_flags(compression));  // Flags
+    write_uvarint(&mut result, payload.len() as u64);  // Original length
+    result.extend_from_slice(&compressed);             // Compressed data
+    result
+}
+```
+
+### Security Limits
+
+Decoders **must** enforce limits to prevent memory exhaustion:
+
+| Limit | Default | Purpose |
+|-------|---------|------|
+| MaxDepth | 1,000 | Prevent stack overflow |
+| MaxArrayLen | 100,000,000 | Limit array size |
+| MaxObjectLen | 10,000,000 | Limit object fields |
+| MaxStringLen | 500,000,000 | Limit string size (500 MB) |
+| MaxBytesLen | 1,000,000,000 | Limit binary data (1 GB) |
+| MaxDictLen | 10,000,000 | Limit dictionary entries |
+| MaxExtLen | 100,000,000 | Limit extension payload |
+| MaxRank | 32 | Limit tensor dimensions |
+
+<Warning>
+**Decompression Bomb Protection:** Always check `OrigLen` against `MaxDecompressedSize` **before** allocating memory. Reject payloads that exceed limits.
+</Warning>
+
+## Column Hints
+
+Optional metadata for columnar readers (appears after header if FlagHasColumnHints is set):
+
+```
+HintCount: varint
+Repeat HintCount times:
+  Field: [len:varint][UTF-8 bytes]
+  Type: u8
+  ShapeLen: varint
+  ShapeDims: ShapeLen × varint
+  Flags: u8
+```
+
+**Example:**
+
+```rust
+// Hint: field "embeddings" is a float32 tensor with shape [100, 768]
+Field: "embeddings" (10 bytes)
+Type: 0x01 (float32)
+ShapeLen: 2
+ShapeDims: [100, 768]
+Flags: 0x00
+```
+
+<Note>
+Column hints enable zero-copy reading for columnar formats like Apache Arrow. Decoders that don't support column hints must skip this block.
+</Note>
+
+## Error Handling
+
+### Canonical Error Codes
+
+| Code | Condition |
+|------|----------|
+| ERR_INVALID_MAGIC | First 2 bytes ≠ "SJ" |
+| ERR_INVALID_VERSION | Version byte ≠ 0x02 |
+| ERR_TRUNCATED | Unexpected end of data |
+| ERR_INVALID_TAG | Unknown type tag |
+| ERR_INVALID_UTF8 | String contains invalid UTF-8 |
+| ERR_INVALID_VARINT | Varint overflow (>64 bits) |
+| ERR_TOO_DEEP | Nesting depth > MaxDepth |
+| ERR_TOO_LARGE | Array/object/string exceeds limits |
+| ERR_DICT_TOO_LARGE | Dictionary > MaxDictLen |
+| ERR_UNSUPPORTED_COMPRESSION | Unknown compression type |
+| ERR_DECOMPRESSED_MISMATCH | Decompressed size ≠ OrigLen |
+
+### Validation Example
+
+```rust
+fn validate_header(data: &[u8]) -> Result<(), Error> {
+    if data.len() < 4 {
+        return Err(Error::Truncated);
+    }
+    if data[0] != 0x53 || data[1] != 0x4A {
+        return Err(Error::InvalidMagic);
+    }
+    if data[2] != 0x02 {
+        return Err(Error::InvalidVersion(data[2]));
+    }
+    Ok(())
+}
+```
+
+## Summary
+
+Cowrie's wire format provides:
+
+✅ **Compact encoding** with varint and zigzag for small numbers  
+✅ **Dictionary coding** for 70-80% size reduction on repeated keys  
+✅ **Type safety** with explicit type tags  
+✅ **Compression** with gzip/zstd support  
+✅ **Security** with configurable limits  
+✅ **Extensibility** via TagExt envelope  
+
+The format balances encoding efficiency with decoding speed, making it ideal for high-throughput ML/AI workloads.

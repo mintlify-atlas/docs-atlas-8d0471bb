@@ -1,0 +1,384 @@
+---
+title: Info Command
+description: Inspect Cowrie file metadata including format version, compression, and schema information
+---
+
+## Overview
+
+The `info` command analyzes Cowrie binary files and displays metadata without fully decoding the contents. It's useful for inspecting files before processing, debugging format issues, and understanding file characteristics.
+
+## Syntax
+
+```bash
+cowrie info < input.cowrie
+```
+
+No flags are required - the command automatically detects the format.
+
+## What It Shows
+
+### Gen2 Files
+
+For Cowrie Gen2 format, `info` displays:
+
+- **Format version** - Generation and version number
+- **File size** - Total bytes
+- **Compression** - Type (none, gzip, zstd) or none
+- **Root type** - The data type at the root level
+- **Schema fingerprint** - 64-bit schema hash
+- **Schema descriptor** - Human-readable schema description
+
+### Gen1 Files
+
+For Cowrie Gen1 format, `info` displays:
+
+- **Format detection** - Identified as "Cowrie Gen1 (likely)"
+- **File size** - Total bytes
+- **Root type** - Go type of the root element
+
+### Unknown Files
+
+For unrecognized formats:
+
+- **Format** - Listed as "Unknown"
+- **File size** - Total bytes
+- **First bytes** - Hex dump of first 4 bytes for debugging
+
+## Examples
+
+### Basic Info
+
+Check a Gen2 file:
+```bash
+$ echo '{"name":"Alice","age":30}' | cowrie encode --gen2 > person.cowrie
+$ cowrie info < person.cowrie
+Format: Cowrie Gen2 (v2)
+Size: 48 bytes
+Compression: none
+Root type: Object
+Schema fingerprint: 0x1a2b3c4d5e6f7a8b
+Schema descriptor: {name:str,age:i64}
+```
+
+### Compressed File
+
+Check a compressed file:
+```bash
+$ cat large.json | cowrie encode --compress=zstd > data.cowrie.zst
+$ cowrie info < data.cowrie.zst
+Format: Cowrie Gen2 (v2)
+Size: 1847294 bytes
+Compression: zstd
+Root type: Object
+Schema fingerprint: 0x8f7e6d5c4b3a2918
+Schema descriptor: {users:arr,metadata:obj}
+```
+
+### Gzip Compressed
+
+Check gzip compression:
+```bash
+$ cowrie encode --compress=gzip < data.json > data.cowrie.gz
+$ cowrie info < data.cowrie.gz
+Format: Cowrie Gen2 (v2)
+Size: 2103847 bytes
+Compression: gzip
+Root type: Array
+Schema fingerprint: 0xa1b2c3d4e5f6a7b8
+Schema descriptor: arr<{id:i64,name:str}>
+```
+
+### Gen1 File
+
+Check a Gen1 format file:
+```bash
+$ echo '{"test":true}' | cowrie encode --gen1 > test.cowrie
+$ cowrie info < test.cowrie
+Format: Cowrie Gen1 (likely)
+Size: 32 bytes
+Root type: map[string]interface {}
+```
+
+### Batch Inspection
+
+Check multiple files:
+```bash
+for file in *.cowrie; do
+  echo "=== $file ==="
+  cowrie info < "$file"
+  echo
+done
+```
+
+Output:
+```
+=== users.cowrie ===
+Format: Cowrie Gen2 (v2)
+Size: 15234 bytes
+Compression: none
+Root type: Array
+Schema fingerprint: 0x7f8e9d0c1b2a3948
+Schema descriptor: arr<{id:i64,name:str,email:str}>
+
+=== config.cowrie ===
+Format: Cowrie Gen2 (v2)
+Size: 892 bytes
+Compression: none
+Root type: Object
+Schema fingerprint: 0x5a6b7c8d9e0f1a2b
+Schema descriptor: {database:obj,server:obj,features:arr}
+```
+
+## Real-World Use Cases
+
+### Pre-Decode Validation
+
+Check format before processing:
+```bash
+#!/bin/bash
+if cowrie info < "$1" | grep -q "Compression: zstd"; then
+  echo "Processing zstd-compressed file..."
+  cowrie decode < "$1" | process-data.sh
+else
+  echo "Processing uncompressed file..."
+  cowrie decode < "$1" | process-data.sh
+fi
+```
+
+### File Inventory
+
+Create inventory of binary files:
+```bash
+find . -name "*.cowrie" | while read -r file; do
+  echo -n "$file: "
+  cowrie info < "$file" | grep "Format:" | cut -d: -f2-
+done
+```
+
+Output:
+```
+./cache/users.cowrie: Cowrie Gen2 (v2)
+./archive/logs-2026-03.cowrie: Cowrie Gen2 (v2)
+./backup/config.cowrie: Cowrie Gen1 (likely)
+```
+
+### Size Analysis
+
+Compare compression effectiveness:
+```bash
+#!/bin/bash
+echo "File,Format,Size,Compression"
+for file in data/*.cowrie*; do
+  info=$(cowrie info < "$file")
+  size=$(echo "$info" | grep "Size:" | awk '{print $2}')
+  comp=$(echo "$info" | grep "Compression:" | cut -d: -f2 | xargs)
+  echo "$file,$format,$size,$comp"
+done
+```
+
+### Format Migration Check
+
+Identify old Gen1 files for migration:
+```bash
+find . -name "*.cowrie" | while read -r file; do
+  if cowrie info < "$file" | grep -q "Gen1"; then
+    echo "Needs migration: $file"
+  fi
+done
+```
+
+### Schema Fingerprint Tracking
+
+Track schema changes over time:
+```bash
+#!/bin/bash
+echo "Date,File,Fingerprint"
+for file in backups/*.cowrie; do
+  date=$(basename "$file" | cut -d- -f1)
+  fp=$(cowrie info < "$file" | grep "Schema fingerprint:" | awk '{print $3}')
+  echo "$date,$file,$fp"
+done
+```
+
+## Understanding Output
+
+### Format Detection
+
+The info command uses magic bytes to detect format:
+
+- **Gen2**: Starts with `SJ` (0x53 0x4A) magic bytes
+- **Gen1**: Starts with type tag (0x00-0x15)
+- **Unknown**: Doesn't match known patterns
+
+### Compression Detection
+
+For Gen2, compression info comes from the flags byte:
+
+- **none**: No compression flag set
+- **gzip**: Compression flag + gzip type (0x01)
+- **zstd**: Compression flag + zstd type (0x02)
+
+### Schema Fingerprint
+
+The 64-bit fingerprint uniquely identifies the data schema:
+
+```
+Schema fingerprint: 0x1a2b3c4d5e6f7a8b
+```
+
+- Same fingerprint = same schema structure
+- Different fingerprint = schema has changed
+- Useful for version tracking and compatibility checks
+
+### Schema Descriptor
+
+Human-readable schema representation:
+
+```
+Schema descriptor: {name:str,age:i64}
+```
+
+Common type abbreviations:
+- `str` - String
+- `i64` - 64-bit integer
+- `f64` - 64-bit float
+- `bool` - Boolean
+- `arr` - Array
+- `obj` - Object
+- `null` - Null value
+
+Complex examples:
+```
+{users:arr<{id:i64,name:str}>,metadata:obj}
+arr<str>
+{id:i64,tags:arr<str>,meta:obj<str,any>}
+```
+
+## Error Handling
+
+### File Too Short
+```bash
+$ echo "SJ" | cowrie info
+Error: input too short
+```
+
+**Solution:** Ensure complete Cowrie file.
+
+### Binary Read Error
+```bash
+$ cowrie info < /dev/random
+Error reading input: ...
+```
+
+**Solution:** Provide valid file input.
+
+### Decode Failure (Partial Info)
+
+If file is corrupt, basic info is still shown:
+```bash
+$ cowrie info < corrupt.cowrie
+Format: Cowrie Gen2 (v2)
+Size: 1024 bytes
+Compression: zstd
+# Root type and schema info may be missing if decode fails
+```
+
+## Debugging Use Cases
+
+### Verify Encoding
+
+Check that encoding produced expected format:
+```bash
+$ cat data.json | cowrie encode --compress=zstd > out.cowrie
+$ cowrie info < out.cowrie | grep Compression
+Compression: zstd
+```
+
+### Compare Files
+
+Check if two files have same schema:
+```bash
+$ cowrie info < file1.cowrie | grep "Schema fingerprint"
+Schema fingerprint: 0x1a2b3c4d5e6f7a8b
+
+$ cowrie info < file2.cowrie | grep "Schema fingerprint"
+Schema fingerprint: 0x1a2b3c4d5e6f7a8b
+```
+
+### Investigate Issues
+
+Debug decode errors by checking format first:
+```bash
+$ cowrie info < problem.cowrie
+Format: Unknown
+Size: 512 bytes
+First bytes: 7b 22 6e 61
+
+$ xxd -l 16 problem.cowrie
+00000000: 7b22 6e61 6d65 223a 2241 6c69 6365 227d  {"name":"Alice"}
+# Oh, it's plain JSON, not Cowrie format!
+```
+
+## Scripting Examples
+
+### Conditional Processing
+
+Process based on compression:
+```bash
+process_file() {
+  local file=$1
+  local comp=$(cowrie info < "$file" | grep "Compression:" | cut -d: -f2 | xargs)
+  
+  case "$comp" in
+    zstd)
+      echo "High compression detected, optimizing for size..."
+      ;;
+    gzip)
+      echo "Standard compression, normal processing..."
+      ;;
+    none)
+      echo "No compression, fast path..."
+      ;;
+  esac
+  
+  cowrie decode < "$file" | process-data.sh
+}
+```
+
+### Size Monitoring
+
+Alert on large files:
+```bash
+check_size() {
+  local file=$1
+  local size=$(cowrie info < "$file" | grep "Size:" | awk '{print $2}')
+  
+  if [ "$size" -gt 10000000 ]; then
+    echo "WARNING: Large file detected: $file ($size bytes)"
+  fi
+}
+```
+
+### Schema Validation
+
+Ensure expected schema:
+```bash
+validate_schema() {
+  local file=$1
+  local expected_fp="0x1a2b3c4d5e6f7a8b"
+  local actual_fp=$(cowrie info < "$file" | grep "Schema fingerprint:" | awk '{print $3}')
+  
+  if [ "$actual_fp" != "$expected_fp" ]; then
+    echo "ERROR: Schema mismatch in $file"
+    echo "  Expected: $expected_fp"
+    echo "  Got: $actual_fp"
+    return 1
+  fi
+}
+```
+
+## See Also
+
+- [Decode Command](/cli/decode) - Decode files after inspection
+- [Encode Command](/cli/encode) - Create files to inspect
+- [CLI Overview](/cli/overview) - General CLI usage

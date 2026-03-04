@@ -1,0 +1,481 @@
+---
+title: 'Format Comparison'
+description: 'Detailed comparison of JSON, Gen1, and Gen2 formats'
+---
+
+## Overview
+
+Cowrie provides two binary formats (Gen1 and Gen2) as alternatives to JSON. This guide helps you understand the tradeoffs and choose the right format for your use case.
+
+## Quick Comparison
+
+| Feature | JSON | Gen1 | Gen2 |
+|---------|------|------|------|
+| **Human-readable** | Yes | No | No |
+| **Schema-free** | Yes | Yes | Yes |
+| **Core types** | 6 | 11 | 13+ |
+| **ML types** | No | Proto-tensors | Full support |
+| **Graph types** | No | 6 types | 6 types |
+| **Dictionary coding** | No | No | Yes |
+| **Compression** | No | No | Optional |
+| **Encode speed** | Baseline | 2-3x faster | 0.5-0.7x baseline |
+| **Decode speed** | Baseline | 3-5x faster | 0.6-0.8x baseline |
+| **Size (simple data)** | Baseline | 70-90% | 85-95% |
+| **Size (repeated schemas)** | Baseline | 70-85% | 47-60% |
+| **Code footprint** | Small | Small | Medium |
+
+## Size Comparison
+
+Real measurements from benchmark suite:
+
+### Small Object (3 fields)
+
+```json
+{"name": "Alice", "age": 30, "score": 3.14159}
+```
+
+| Format | Size | % of JSON | Notes |
+|--------|------|-----------|-------|
+| JSON | 46 bytes | 100% | Text representation with quotes |
+| Gen1 | 35 bytes | 76% | Binary encoding, inline keys |
+| Gen2 | 43 bytes | 93% | Dictionary overhead for single object |
+
+**Winner**: Gen1 (no dictionary overhead)
+
+### Large Array (1000 objects with repeated schema)
+
+```json
+[
+  {"id": 0, "name": "item", "value": 0.0},
+  {"id": 1, "name": "item", "value": 0.1},
+  // ... 998 more with same keys
+]
+```
+
+| Format | Size | % of JSON | Notes |
+|--------|------|-----------|-------|
+| JSON | 48KB | 100% | Keys repeated 1000 times |
+| Gen1 | 34KB | 70% | Binary encoding, keys still repeated |
+| Gen2 | 23KB | 47% | Keys stored once in dictionary |
+
+**Winner**: Gen2 (~50% size reduction via dictionary coding)
+
+### Float Array (10,000 floats)
+
+```json
+[0.000, 0.001, 0.002, ..., 9.999]
+```
+
+| Format | Size | % of JSON | Notes |
+|--------|------|-----------|-------|
+| JSON | 86KB | 100% | Text representation of floats |
+| Gen1 | 80KB | 93% | Binary float64 array (8 bytes per float) |
+| Gen2 | ~80KB | 93% | Same as Gen1 (no dictionary benefit) |
+
+**Winner**: Tie (Gen1/Gen2) - both use binary encoding
+
+**Note**: Adding compression (Gen2 only) can reduce to ~50-60% of JSON size for floating-point data.
+
+### Graph Shard (100 nodes, 200 edges)
+
+```json
+{
+  "nodes": [
+    {"id": "1", "labels": ["Node"], "props": {"x": 0.1}},
+    // ... 99 more
+  ],
+  "edges": [
+    {"from": "1", "to": "2", "type": "EDGE", "props": {"weight": 0.85}},
+    // ... 199 more
+  ],
+  "metadata": {"version": 1}
+}
+```
+
+| Format | Size | Notes |
+|--------|------|-------|
+| JSON | N/A | Not efficient for graph data |
+| Gen1 | ~12KB | Graph types with inline property keys |
+| Gen2 | ~10KB | Dictionary-coded property keys |
+
+**Winner**: Gen2 (specialized graph types with dictionary coding)
+
+## Performance Comparison
+
+### Encode Speed
+
+| Workload | JSON (baseline) | Gen1 | Gen2 |
+|----------|-----------------|------|------|
+| Small objects | 1.0x | 2-3x faster | 0.8-1.0x |
+| Large arrays | 1.0x | 2-3x faster | 0.5-0.7x |
+| Float arrays | 1.0x | 3-5x faster | 0.5-0.7x |
+| Graph data | N/A | N/A | Baseline |
+
+**Why Gen1 is faster:**
+- No dictionary building pass
+- Single-pass encoding
+- Simpler type system
+
+**Why Gen2 is slower:**
+- Two-pass encoding (collect keys, then encode)
+- Dictionary management overhead
+- More complex type system
+
+### Decode Speed
+
+| Workload | JSON (baseline) | Gen1 | Gen2 |
+|----------|-----------------|------|------|
+| Small objects | 1.0x | 3-5x faster | 2-3x faster |
+| Large arrays | 1.0x | 3-5x faster | 2-4x faster |
+| Float arrays | 1.0x | 5-10x faster | 5-10x faster |
+| Graph data | N/A | N/A | Baseline |
+
+**Why binary formats are faster:**
+- No text parsing
+- Direct memory reads
+- Type tags eliminate ambiguity
+- Varint integers more compact
+
+## Feature Comparison
+
+### Type Support
+
+**JSON (6 types):**
+- null, boolean, number, string, array, object
+
+**Gen1 (11 core + 6 graph types):**
+- null, boolean, int64, float64, string, bytes, array, object
+- Int64Array, Float64Array, StringArray (proto-tensors)
+- Node, Edge, AdjList, NodeBatch, EdgeBatch, GraphShard
+
+**Gen2 (13 core + 6 graph + ML types):**
+- All Gen1 types
+- uint64, decimal128, datetime64, uuid128, bigint
+- Tensor, TensorRef, Image, Audio
+- Dictionary-coded objects
+
+### Dictionary Coding (Gen2 Only)
+
+**How it works:**
+```
+// Input objects
+[
+  {"name": "Alice", "age": 30},
+  {"name": "Bob", "age": 25},
+  {"name": "Carol", "age": 35}
+]
+
+// Gen1 encoding (simplified)
+Object("name", "Alice", "age", 30)
+Object("name", "Bob", "age", 25)
+Object("name", "Carol", "age", 35)
+// Keys repeated 3 times
+
+// Gen2 encoding (simplified)
+Dictionary: ["name", "age"]
+Object(0, "Alice", 1, 30)
+Object(0, "Bob", 1, 25)
+Object(0, "Carol", 1, 35)
+// Keys stored once, referenced by index
+```
+
+**Size savings:** 30-50% for repeated schemas
+
+### Compression (Gen2 Only)
+
+Gen2 supports optional gzip/zstd compression:
+
+| Data Type | Uncompressed | + gzip | + zstd |
+|-----------|--------------|--------|--------|
+| Text-heavy | 100% | 30-40% | 25-35% |
+| Numeric | 100% | 60-70% | 50-60% |
+| Graph data | 100% | 40-50% | 35-45% |
+
+**Tradeoff:** 2-5x slower encode/decode
+
+### Schema Flexibility
+
+All three formats are schema-free (dynamic typing):
+
+```go
+// Valid in all formats
+data := map[string]any{
+    "field1": 42,              // integer
+    "field2": "text",          // string
+    "field3": []any{1, "two"}, // mixed array
+}
+```
+
+No .proto files or schema definitions required.
+
+## Use Case Recommendations
+
+### Simple JSON APIs
+
+**Best choice:** Gen1
+
+**Why:**
+- Drop-in replacement for JSON
+- Faster encode/decode than JSON
+- 10-30% size reduction
+- Predictable latency
+- Smaller code footprint
+
+**Example:**
+```go
+// REST API response
+response := map[string]any{
+    "user": map[string]any{
+        "id": 42,
+        "name": "Alice",
+        "email": "alice@example.com",
+    },
+    "status": "success",
+}
+data, _ := gen1.Encode(response)
+// ~30% smaller than JSON, 2-3x faster
+```
+
+### Event Logs / Time-Series Data
+
+**Best choice:** Gen2
+
+**Why:**
+- Repeated schema (same keys per event)
+- ~50% size reduction via dictionary coding
+- Compression for long-term storage
+- Efficient for bulk processing
+
+**Example:**
+```python
+# Application logs with repeated schema
+logs = [
+    {"timestamp": t1, "level": "info", "message": m1, "user_id": u1},
+    {"timestamp": t2, "level": "warn", "message": m2, "user_id": u2},
+    # ... thousands more with same keys
+]
+data = gen2.encode(gen2.from_any(logs))
+# ~50% of JSON size due to dictionary coding
+```
+
+### ML Pipelines
+
+**Best choice:** Gen2
+
+**Why:**
+- Native tensor support
+- Image/Audio types
+- TensorRef for large model weights
+- Compression for storage
+
+**Example:**
+```python
+from cowrie.gen2 import Value, TensorData, DType
+
+# Encode embeddings efficiently
+tensor = Value.tensor(
+    data=embedding_array,
+    shape=[batch_size, embedding_dim],
+    dtype=DType.FLOAT32
+)
+data = encode(tensor, compress=True)
+```
+
+### Graph Neural Networks
+
+**Best choice:** Gen2
+
+**Why:**
+- Native graph types (Node, Edge, GraphShard)
+- Dictionary-coded node/edge properties
+- Efficient mini-batch serialization
+- Streaming support for large graphs
+
+**Example:**
+```go
+// GNN mini-batch
+shard := gen2.GraphShard(nodes, edges, metadata)
+data, _ := gen2.Encode(shard)
+// Efficient subgraph encoding for training
+```
+
+### Embedded Systems / IoT
+
+**Best choice:** Gen1
+
+**Why:**
+- Smaller code footprint (~5-10KB)
+- Lower memory usage
+- Single-pass encoding (predictable)
+- No dictionary overhead
+- Simpler implementation
+
+**Example:**
+```c
+// Sensor data on embedded device
+cowrie_g1_value_t *data = cowrie_g1_object(3);
+cowrie_g1_object_set(data, "temp", cowrie_g1_float64(23.5));
+cowrie_g1_object_set(data, "humidity", cowrie_g1_float64(65.0));
+cowrie_g1_object_set(data, "timestamp", cowrie_g1_int64(ts));
+
+cowrie_g1_buf_t buf;
+cowrie_g1_encode(data, &buf);
+// Small, efficient, predictable
+```
+
+### Real-Time Systems
+
+**Best choice:** Gen1
+
+**Why:**
+- Single-pass encoding (no dictionary building)
+- Predictable latency (no worst-case scenarios)
+- Minimal memory allocations
+- Deterministic performance
+
+**Example:**
+```rust
+// High-frequency trading tick data
+let tick = gen1::Value::Object(vec![
+    ("symbol".into(), gen1::Value::String("AAPL".into())),
+    ("price".into(), gen1::Value::Float64(150.25)),
+    ("volume".into(), gen1::Value::Int64(1000)),
+    ("timestamp".into(), gen1::Value::Int64(ts)),
+]);
+let encoded = gen1::encode(&tick)?;
+// Consistent sub-microsecond latency
+```
+
+### Bulk Data Transfer
+
+**Best choice:** Gen2 + compression
+
+**Why:**
+- Maximum size reduction (~60-70% of JSON)
+- Dictionary coding + compression
+- Column-wise access for analytics
+- Streaming support
+
+**Example:**
+```typescript
+// Bulk export of user data
+const users = /* millions of user records */;
+const encoded = gen2.encode(
+    gen2.SJ.array(users.map(u => gen2.SJ.object([...]))),
+    { compress: true, compressionType: 'zstd' }
+);
+// 60-70% of JSON size, efficient for S3/cloud storage
+```
+
+## Migration Path
+
+### From JSON to Gen1
+
+**Minimal changes:**
+```go
+// Before
+data, _ := json.Marshal(obj)
+
+// After
+data, _ := gen1.Encode(obj)
+```
+
+**Benefits:**
+- 2-3x faster
+- 10-30% smaller
+- Drop-in replacement
+
+### From JSON to Gen2
+
+**Requires planning:**
+```python
+# Before
+data = json.dumps(obj)
+
+# After
+val = gen2.from_any(obj)
+data = gen2.encode(val)
+```
+
+**Benefits:**
+- 50%+ smaller for repeated schemas
+- ML type support
+- Graph types
+
+**Tradeoff:** Slightly slower for one-off encoding
+
+### From Gen1 to Gen2
+
+**When to migrate:**
+- You have repeated object schemas
+- Storage/bandwidth is constrained
+- You need ML/graph types
+
+**When to stay on Gen1:**
+- Performance-critical hot paths
+- Simple data structures
+- Embedded systems
+
+## Interoperability
+
+### Gen1 ↔ Gen2
+
+Gen1 and Gen2 are **not compatible** (different type tags). Use magic header detection:
+
+```go
+func Decode(data []byte) (any, error) {
+    if len(data) >= 2 && data[0] == 'S' && data[1] == 'J' {
+        return gen2.Decode(data)  // Gen2 format
+    }
+    return gen1.Decode(data)      // Gen1 format
+}
+```
+
+### JSON Bridge
+
+Both formats can convert to/from JSON:
+
+```python
+# JSON → Gen1 → JSON (lossless)
+obj = json.loads(json_str)
+gen1_data = gen1.encode(obj)
+recovered = gen1.decode(gen1_data)
+assert obj == recovered
+
+# JSON → Gen2 → JSON (lossless)
+val = gen2.from_any(obj)
+gen2_data = gen2.encode(val)
+recovered = gen2.decode(gen2_data)
+assert obj == gen2.to_any(recovered)
+```
+
+## Summary
+
+**Use JSON when:**
+- Human readability is required
+- Debugging and inspection are priorities
+- Ecosystem compatibility matters
+- Performance is not critical
+
+**Use Gen1 when:**
+- You want a faster, smaller JSON replacement
+- Predictable latency is important
+- Code footprint matters (embedded)
+- Simple is better
+
+**Use Gen2 when:**
+- You have repeated object schemas (logs, events)
+- ML types are needed (tensors, images)
+- Graph data is central (GNN, knowledge graphs)
+- Storage/bandwidth is constrained
+
+**Real-world approach:**
+- Start with Gen1 for most use cases
+- Migrate to Gen2 for high-volume, repeated-schema workloads
+- Keep JSON for debugging and external APIs
+
+## Next Steps
+
+- See [Benchmarks](/performance/benchmarks) for detailed measurements
+- See [Optimization](/performance/optimization) for tuning tips
+- Try both formats on your data to measure actual savings

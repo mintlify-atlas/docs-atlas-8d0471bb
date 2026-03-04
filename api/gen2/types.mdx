@@ -1,0 +1,711 @@
+---
+title: 'Core Types'
+description: 'Gen2 core type tags and value constructors'
+icon: 'cube'
+---
+
+## Overview
+
+Cowrie Gen2 supports 9 core types that extend JSON with explicit numeric types and native binary data.
+
+## Type Constants
+
+### Type Tags (Wire Format)
+
+```go
+const (
+    TagNull       = 0x00
+    TagFalse      = 0x01
+    TagTrue       = 0x02
+    TagInt64      = 0x03
+    TagFloat64    = 0x04
+    TagString     = 0x05
+    TagArray      = 0x06
+    TagObject     = 0x07
+    TagBytes      = 0x08
+    TagUint64     = 0x09
+)
+```
+
+### Type Enum
+
+```go
+type Type uint8
+
+const (
+    TypeNull Type = iota
+    TypeBool
+    TypeInt64
+    TypeUint64
+    TypeFloat64
+    TypeString
+    TypeBytes
+    TypeArray
+    TypeObject
+)
+```
+
+<Note>
+Type tags (wire format) differ from Type enum (API). For example, `TagArray = 0x06` but `TypeArray = 7`.
+</Note>
+
+---
+
+## Value Type
+
+### Value Struct
+
+```go
+type Value struct {
+    // Private fields
+}
+```
+
+Represents an immutable Cowrie value of any type. Use constructors to create values.
+
+### Type Methods
+
+#### Type
+
+```go
+func (v *Value) Type() Type
+```
+
+Returns the type of this value.
+
+**Example:**
+
+```go
+val := cowrie.Int64(42)
+if val.Type() == cowrie.TypeInt64 {
+    fmt.Println("Integer:", val.Int64())
+}
+```
+
+#### IsNull
+
+```go
+func (v *Value) IsNull() bool
+```
+
+Returns true if this value is null.
+
+**Example:**
+
+```go
+if val.IsNull() {
+    fmt.Println("Value is null")
+}
+```
+
+---
+
+## Null
+
+### Constructor
+
+```go
+func Null() *Value
+```
+
+Creates a null value.
+
+**Wire format:**
+
+```
+Tag: 0x00
+```
+
+**Example:**
+
+```go
+val := cowrie.Null()
+// Encodes to: 0x00
+```
+
+---
+
+## Bool
+
+### Constructor
+
+```go
+func Bool(b bool) *Value
+```
+
+Creates a boolean value.
+
+**Wire format:**
+
+```
+Tag: 0x01 (false) or 0x02 (true)
+```
+
+**Example:**
+
+```go
+val := cowrie.Bool(true)
+if val.Type() == cowrie.TypeBool {
+    fmt.Println("Bool:", val.Bool()) // true
+}
+```
+
+### Accessor
+
+```go
+func (v *Value) Bool() bool
+```
+
+Returns the boolean value. Panics if not a bool.
+
+### Safe Accessors
+
+```go
+func (v *Value) TryBool() (bool, bool)
+func (v *Value) BoolOr(defaultVal bool) bool
+```
+
+**Example:**
+
+```go
+if val, ok := v.TryBool(); ok {
+    fmt.Println("Bool:", val)
+}
+
+b := v.BoolOr(false) // Returns false if not a bool
+```
+
+---
+
+## Int64
+
+### Constructor
+
+```go
+func Int64(i int64) *Value
+```
+
+Creates a signed 64-bit integer value.
+
+**Wire format:**
+
+```
+Tag: 0x03
+Value: zigzag-encoded varint
+```
+
+**Zigzag encoding** maps signed integers to unsigned for efficient varint encoding:
+
+```
+ 0 →  0
+-1 →  1
+ 1 →  2
+-2 →  3
+```
+
+**Example:**
+
+```go
+val := cowrie.Int64(-42)
+data, _ := cowrie.Encode(val)
+// Wire: 0x03 0x53 (tag + zigzag varint)
+
+fmt.Println(val.Int64()) // -42
+```
+
+### Accessor
+
+```go
+func (v *Value) Int64() int64
+```
+
+Returns the int64 value. Panics if not an int64.
+
+### Safe Accessors
+
+```go
+func (v *Value) TryInt64() (int64, bool)
+func (v *Value) Int64Or(defaultVal int64) int64
+```
+
+---
+
+## Uint64
+
+### Constructor
+
+```go
+func Uint64(u uint64) *Value
+```
+
+Creates an unsigned 64-bit integer value.
+
+**Wire format:**
+
+```
+Tag: 0x09
+Value: varint
+```
+
+**Example:**
+
+```go
+val := cowrie.Uint64(1234567890)
+fmt.Println(val.Uint64()) // 1234567890
+```
+
+### Accessor
+
+```go
+func (v *Value) Uint64() uint64
+```
+
+### Safe Accessors
+
+```go
+func (v *Value) TryUint64() (uint64, bool)
+func (v *Value) Uint64Or(defaultVal uint64) uint64
+```
+
+---
+
+## Float64
+
+### Constructor
+
+```go
+func Float64(f float64) *Value
+```
+
+Creates a 64-bit floating point value.
+
+**Wire format:**
+
+```
+Tag: 0x04
+Value: 8 bytes (IEEE 754 little-endian)
+```
+
+**Example:**
+
+```go
+val := cowrie.Float64(3.14159)
+fmt.Println(val.Float64()) // 3.14159
+```
+
+### Accessor
+
+```go
+func (v *Value) Float64() float64
+```
+
+### Safe Accessors
+
+```go
+func (v *Value) TryFloat64() (float64, bool)
+func (v *Value) Float64Or(defaultVal float64) float64
+```
+
+---
+
+## String
+
+### Constructor
+
+```go
+func String(s string) *Value
+```
+
+Creates a UTF-8 string value.
+
+**Wire format:**
+
+```
+Tag: 0x05
+Length: varint (byte count)
+Data: UTF-8 bytes
+```
+
+**Example:**
+
+```go
+val := cowrie.String("Hello, 世界")
+fmt.Println(val.String()) // "Hello, 世界"
+```
+
+### Accessor
+
+```go
+func (v *Value) String() string
+```
+
+### Safe Accessors
+
+```go
+func (v *Value) TryString() (string, bool)
+func (v *Value) StringOr(defaultVal string) string
+```
+
+---
+
+## Bytes
+
+### Constructor
+
+```go
+func Bytes(b []byte) *Value
+```
+
+Creates a binary data value. No base64 encoding required.
+
+**Wire format:**
+
+```
+Tag: 0x08
+Length: varint (byte count)
+Data: raw bytes
+```
+
+**Example:**
+
+```go
+data := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+val := cowrie.Bytes(data)
+fmt.Printf("%x\n", val.Bytes()) // "deadbeef"
+```
+
+### Accessor
+
+```go
+func (v *Value) Bytes() []byte
+```
+
+### Safe Accessor
+
+```go
+func (v *Value) TryBytes() ([]byte, bool)
+```
+
+---
+
+## Array
+
+### Constructor
+
+```go
+func Array(items ...*Value) *Value
+```
+
+Creates an array of values. Elements can be heterogeneous.
+
+**Wire format:**
+
+```
+Tag: 0x06
+Count: varint (element count)
+Elements: encoded values
+```
+
+**Example:**
+
+```go
+arr := cowrie.Array(
+    cowrie.Int64(1),
+    cowrie.String("two"),
+    cowrie.Float64(3.0),
+)
+
+fmt.Println(arr.Len()) // 3
+fmt.Println(arr.Index(1).String()) // "two"
+```
+
+### Accessors
+
+#### Len
+
+```go
+func (v *Value) Len() int
+```
+
+Returns array length (or object member count, or 0 for other types).
+
+#### Index
+
+```go
+func (v *Value) Index(i int) *Value
+```
+
+Returns the i-th element. Panics if not an array or out of bounds.
+
+#### IndexOr
+
+```go
+func (v *Value) IndexOr(i int, defaultVal *Value) *Value
+```
+
+Returns the i-th element or defaultVal if out of bounds or not an array.
+
+#### Array
+
+```go
+func (v *Value) Array() []*Value
+```
+
+Returns all array elements. Panics if not an array.
+
+#### TryArray
+
+```go
+func (v *Value) TryArray() ([]*Value, bool)
+```
+
+Returns array elements and true, or (nil, false) if not an array.
+
+### Mutation
+
+#### Append
+
+```go
+func (v *Value) Append(val *Value)
+```
+
+Appends a value to an array. Panics if not an array.
+
+**Example:**
+
+```go
+arr := cowrie.Array()
+arr.Append(cowrie.Int64(1))
+arr.Append(cowrie.Int64(2))
+fmt.Println(arr.Len()) // 2
+```
+
+---
+
+## Object
+
+### Member Type
+
+```go
+type Member struct {
+    Key   string
+    Value *Value
+}
+```
+
+Represents a key-value pair in an object.
+
+### Constructors
+
+#### Object
+
+```go
+func Object(members ...Member) *Value
+```
+
+Creates an object from members.
+
+**Wire format:**
+
+```
+Tag: 0x07
+Count: varint (member count)
+Members: (dictIndex:varint + value)*
+```
+
+**Example:**
+
+```go
+obj := cowrie.Object(
+    cowrie.Member{Key: "name", Value: cowrie.String("Alice")},
+    cowrie.Member{Key: "age", Value: cowrie.Int64(30)},
+)
+
+name := obj.Get("name").String() // "Alice"
+```
+
+#### ObjectFromMap
+
+```go
+func ObjectFromMap(m map[string]*Value) *Value
+```
+
+Creates an object from a map. Order is non-deterministic unless using `EncodeOptions{Deterministic: true}`.
+
+**Example:**
+
+```go
+m := map[string]*Value{
+    "x": cowrie.Float64(1.0),
+    "y": cowrie.Float64(2.0),
+}
+obj := cowrie.ObjectFromMap(m)
+```
+
+### Accessors
+
+#### Get
+
+```go
+func (v *Value) Get(key string) *Value
+```
+
+Returns the value for a key, or nil if not found. Panics if not an object.
+
+#### GetOr
+
+```go
+func (v *Value) GetOr(key string, defaultVal *Value) *Value
+```
+
+Returns the value for a key or defaultVal if not found or not an object.
+
+#### Members
+
+```go
+func (v *Value) Members() []Member
+```
+
+Returns all object members. Panics if not an object.
+
+#### TryObject
+
+```go
+func (v *Value) TryObject() ([]Member, bool)
+```
+
+Returns members and true, or (nil, false) if not an object.
+
+**Example:**
+
+```go
+for _, m := range obj.Members() {
+    fmt.Printf("%s: %v\n", m.Key, m.Value)
+}
+```
+
+### Mutation
+
+#### Set
+
+```go
+func (v *Value) Set(key string, val *Value)
+```
+
+Sets a key-value pair. Updates existing key or adds new member. Panics if not an object.
+
+**Example:**
+
+```go
+obj := cowrie.Object()
+obj.Set("x", cowrie.Int64(10))
+obj.Set("x", cowrie.Int64(20)) // Updates existing
+fmt.Println(obj.Get("x").Int64()) // 20
+```
+
+---
+
+## Dictionary Coding
+
+Gen2 objects use dictionary coding for efficient key encoding:
+
+**Before encoding:**
+
+```go
+array := cowrie.Array(
+    cowrie.Object(
+        cowrie.Member{Key: "id", Value: cowrie.Int64(1)},
+        cowrie.Member{Key: "name", Value: cowrie.String("Alice")},
+    ),
+    cowrie.Object(
+        cowrie.Member{Key: "id", Value: cowrie.Int64(2)},
+        cowrie.Member{Key: "name", Value: cowrie.String("Bob")},
+    ),
+)
+```
+
+**Wire format:**
+
+```
+Dictionary: ["id", "name"]
+Array: [
+  Object: {0: 1, 1: "Alice"},
+  Object: {0: 2, 1: "Bob"}
+]
+```
+
+**Size savings**: ~70% reduction for repeated schemas.
+
+---
+
+## Type Checking Patterns
+
+### Type Switch
+
+```go
+switch val.Type() {
+case cowrie.TypeNull:
+    fmt.Println("null")
+case cowrie.TypeBool:
+    fmt.Println("bool:", val.Bool())
+case cowrie.TypeInt64:
+    fmt.Println("int64:", val.Int64())
+case cowrie.TypeString:
+    fmt.Println("string:", val.String())
+case cowrie.TypeArray:
+    for i := 0; i < val.Len(); i++ {
+        processValue(val.Index(i))
+    }
+case cowrie.TypeObject:
+    for _, m := range val.Members() {
+        processField(m.Key, m.Value)
+    }
+}
+```
+
+### Safe Access
+
+```go
+// Try pattern (returns value and bool)
+if s, ok := val.TryString(); ok {
+    fmt.Println("String:", s)
+}
+
+// Or pattern (returns value or default)
+count := val.GetOr("count", cowrie.Int64(0)).Int64()
+```
+
+---
+
+## Gen1 vs Gen2 Tag Differences
+
+<Warning>
+Gen1 and Gen2 use different tag values for several types. Always check for 'SJ' magic header to detect Gen2.
+</Warning>
+
+| Tag | Gen1 Type | Gen2 Type |
+|-----|-----------|----------|
+| 0x06 | **Bytes** | **Array** |
+| 0x07 | **Array** | **Object** |
+| 0x08 | **Object** | **Bytes** |
+
+**Format detection:**
+
+```go
+if len(data) >= 2 && data[0] == 'S' && data[1] == 'J' {
+    // Gen2 format
+    val, _ := cowrie.Decode(data)
+} else {
+    // Gen1 format
+    val, _ := cowrie.DecodeGen1(data)
+}
+```
+
+---
+
+## See Also
+
+- [Extended Types](/api/gen2/extended-types) - Decimal128, Datetime64, UUID128, BigInt, ML types
+- [Encode & Decode](/api/gen2/encode-decode) - Encoding and decoding functions
+- [ColumnReader](/api/gen2/column-reader) - Columnar access for arrays of objects
+- [Compression](/api/gen2/compression) - Compression formats and flags

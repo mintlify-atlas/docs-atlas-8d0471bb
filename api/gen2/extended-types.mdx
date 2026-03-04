@@ -1,0 +1,656 @@
+---
+title: 'Extended Types'
+description: 'Gen2 extended types: Decimal128, Datetime64, UUID128, BigInt, and ML extensions'
+icon: 'atom'
+---
+
+## Overview
+
+Cowrie Gen2 extends JSON with high-precision types and ML/multimodal extensions.
+
+## Extended Type Tags
+
+```go
+const (
+    TagDecimal128 = 0x0A  // High-precision decimal
+    TagDatetime64 = 0x0B  // Nanosecond timestamp
+    TagUUID128    = 0x0C  // Native UUID
+    TagBigInt     = 0x0D  // Arbitrary precision integer
+    TagExt        = 0x0E  // Extension envelope
+    
+    // ML/Multimodal extensions (0x20-0x2F)
+    TagTensor     = 0x20  // Tensor data
+    TagTensorRef  = 0x21  // Tensor reference
+    TagImage      = 0x22  // Image data
+    TagAudio      = 0x23  // Audio data
+)
+```
+
+---
+
+## Decimal128
+
+### Type
+
+```go
+type Decimal128 struct {
+    Scale int8     // -127 to +127
+    Coef  [16]byte // Two's complement big-endian
+}
+```
+
+Represents a 128-bit decimal number: `Value = Coef × 10^(-Scale)`
+
+**Wire format:**
+
+```
+Tag: 0x0A
+Scale: int8 (1 byte, signed)
+Coef: 16 bytes (two's complement big-endian)
+```
+
+### Constructor
+
+```go
+func NewDecimal128(scale int8, coef [16]byte) *Value
+```
+
+**Example:**
+
+```go
+// Represent 123.45 as Decimal128
+// 123.45 = 12345 × 10^(-2)
+var coef [16]byte
+binary.BigEndian.PutUint64(coef[8:], 12345)
+val := cowrie.NewDecimal128(2, coef)
+
+dec := val.Decimal128()
+fmt.Printf("Scale: %d, Coef: %d\n", dec.Scale, dec.Coef)
+```
+
+### Accessor
+
+```go
+func (v *Value) Decimal128() Decimal128
+```
+
+Returns the Decimal128 value. Panics if not a decimal128.
+
+---
+
+## Datetime64
+
+### Constructor
+
+```go
+func Datetime64(nanos int64) *Value
+```
+
+Creates a datetime value from nanoseconds since Unix epoch (1970-01-01 00:00:00 UTC).
+
+**Wire format:**
+
+```
+Tag: 0x0B
+Value: int64 (8 bytes little-endian, nanoseconds since epoch)
+```
+
+**Example:**
+
+```go
+import "time"
+
+// From time.Time
+t := time.Now()
+val := cowrie.Datetime64(t.UnixNano())
+
+// To time.Time
+nanos := val.Datetime64()
+recovered := time.Unix(0, nanos)
+fmt.Println(recovered.Format(time.RFC3339Nano))
+```
+
+### Helper Constructor
+
+```go
+func Datetime(t time.Time) *Value
+```
+
+Creates a datetime value from `time.Time`.
+
+**Example:**
+
+```go
+val := cowrie.Datetime(time.Now())
+```
+
+### Accessor
+
+```go
+func (v *Value) Datetime64() int64
+```
+
+Returns nanoseconds since Unix epoch. Panics if not a datetime64.
+
+### Safe Accessor
+
+```go
+func (v *Value) TryDatetime64() (int64, bool)
+```
+
+---
+
+## UUID128
+
+### Constructor
+
+```go
+func UUID128(uuid [16]byte) *Value
+```
+
+Creates a native UUID value (no string conversion required).
+
+**Wire format:**
+
+```
+Tag: 0x0C
+Value: 16 bytes (UUID bytes)
+```
+
+**Example:**
+
+```go
+import "github.com/google/uuid"
+
+// From google/uuid
+id := uuid.New()
+var arr [16]byte
+copy(arr[:], id[:])
+val := cowrie.UUID128(arr)
+
+// To google/uuid
+uuidBytes := val.UUID128()
+recovered, _ := uuid.FromBytes(uuidBytes[:])
+fmt.Println(recovered.String()) // "550e8400-e29b-41d4-a716-446655440000"
+```
+
+### Accessor
+
+```go
+func (v *Value) UUID128() [16]byte
+```
+
+Returns the UUID bytes. Panics if not a uuid128.
+
+### Safe Accessor
+
+```go
+func (v *Value) TryUUID128() ([16]byte, bool)
+```
+
+---
+
+## BigInt
+
+### Constructor
+
+```go
+func BigInt(b []byte) *Value
+```
+
+Creates an arbitrary-precision integer from two's complement big-endian bytes.
+
+**Wire format:**
+
+```
+Tag: 0x0D
+Length: varint (byte count)
+Data: two's complement big-endian bytes
+```
+
+**Example:**
+
+```go
+import "math/big"
+
+// From big.Int
+n := new(big.Int)
+n.SetString("123456789012345678901234567890", 10)
+val := cowrie.BigInt(n.Bytes())
+
+// To big.Int
+bytes := val.BigInt()
+recovered := new(big.Int).SetBytes(bytes)
+fmt.Println(recovered.String())
+```
+
+### Accessor
+
+```go
+func (v *Value) BigInt() []byte
+```
+
+Returns two's complement big-endian bytes. Panics if not a bigint.
+
+---
+
+## TagExt (Extension Envelope)
+
+### UnknownExtData Type
+
+```go
+type UnknownExtData struct {
+    ExtType uint64 // Extension type identifier
+    Payload []byte // Raw extension payload
+}
+```
+
+Preserves unknown extensions for round-tripping.
+
+**Wire format:**
+
+```
+Tag: 0x0E
+ExtType: varint (extension type ID)
+Length: varint (payload byte count)
+Payload: raw bytes
+```
+
+### Constructor
+
+```go
+func UnknownExtension(extType uint64, payload []byte) *Value
+```
+
+**Example:**
+
+```go
+// Custom extension type 0x100
+payload := []byte{0x01, 0x02, 0x03}
+val := cowrie.UnknownExtension(0x100, payload)
+
+ext := val.UnknownExt()
+fmt.Printf("ExtType: 0x%x, Payload: %x\n", ext.ExtType, ext.Payload)
+```
+
+### Accessors
+
+```go
+func (v *Value) UnknownExt() UnknownExtData
+func (v *Value) TryUnknownExt() (UnknownExtData, bool)
+```
+
+### Decode Behavior
+
+```go
+type UnknownExtBehavior int
+
+const (
+    UnknownExtKeep       UnknownExtBehavior = iota // Preserve as UnknownExtData (default)
+    UnknownExtSkipAsNull                             // Skip and return Null
+    UnknownExtError                                  // Return error
+)
+```
+
+**Example:**
+
+```go
+opts := cowrie.DecodeOptions{
+    OnUnknownExt: cowrie.UnknownExtError, // Strict mode
+}
+val, err := cowrie.DecodeWithOptions(data, opts)
+if err == cowrie.ErrUnknownExt {
+    fmt.Println("Unknown extension encountered")
+}
+```
+
+---
+
+## Tensor
+
+### TensorData Type
+
+```go
+type TensorData struct {
+    DType DType    // Data type
+    Dims  []uint64 // Shape dimensions
+    Data  []byte   // Raw tensor bytes, row-major
+}
+```
+
+### DType Constants
+
+```go
+type DType uint8
+
+const (
+    DTypeFloat32  DType = 0x01
+    DTypeFloat16  DType = 0x02
+    DTypeBFloat16 DType = 0x03
+    DTypeFloat64  DType = 0x0C
+    DTypeInt8     DType = 0x04
+    DTypeInt16    DType = 0x05
+    DTypeInt32    DType = 0x06
+    DTypeInt64    DType = 0x07
+    DTypeUint8    DType = 0x08
+    DTypeUint16   DType = 0x09
+    DTypeUint32   DType = 0x0A
+    DTypeUint64   DType = 0x0B
+    DTypeBool     DType = 0x0D
+)
+```
+
+**Wire format:**
+
+```
+Tag: 0x20
+DType: u8
+Rank: u8 (dimension count)
+Dims: rank × varint
+DataLen: varint
+Data: raw bytes
+```
+
+### Constructor
+
+```go
+func Tensor(dtype DType, dims []uint64, data []byte) *Value
+```
+
+**Example:**
+
+```go
+// Create a 2×3 float32 tensor
+data := []byte{
+    0x00, 0x00, 0x80, 0x3f, // 1.0
+    0x00, 0x00, 0x00, 0x40, // 2.0
+    0x00, 0x00, 0x40, 0x40, // 3.0
+    0x00, 0x00, 0x80, 0x40, // 4.0
+    0x00, 0x00, 0xa0, 0x40, // 5.0
+    0x00, 0x00, 0xc0, 0x40, // 6.0
+}
+val := cowrie.Tensor(cowrie.DTypeFloat32, []uint64{2, 3}, data)
+
+tensor := val.Tensor()
+fmt.Printf("Shape: %v, DType: %d\n", tensor.Dims, tensor.DType)
+```
+
+### Accessor
+
+```go
+func (v *Value) Tensor() TensorData
+```
+
+### Zero-Copy Views
+
+```go
+func (td *TensorData) ViewFloat32() ([]float32, bool)
+func (td *TensorData) ViewFloat64() ([]float64, bool)
+func (td *TensorData) ViewInt32() ([]int32, bool)
+func (td *TensorData) ViewInt64() ([]int64, bool)
+func (td *TensorData) ViewUint8() ([]uint8, bool)
+```
+
+Returns zero-copy views of tensor data. Returns `(nil, false)` if dtype mismatches or alignment is invalid.
+
+**Example:**
+
+```go
+tensor := val.Tensor()
+if floats, ok := tensor.ViewFloat32(); ok {
+    for i, f := range floats {
+        fmt.Printf("Element %d: %f\n", i, f)
+    }
+}
+```
+
+---
+
+## TensorRef
+
+### TensorRefData Type
+
+```go
+type TensorRefData struct {
+    StoreID uint8  // Which store/shard
+    Key     []byte // Lookup key (UUID, hash, etc.)
+}
+```
+
+References a tensor stored externally (e.g., in a tensor store, object storage, or database).
+
+**Wire format:**
+
+```
+Tag: 0x21
+StoreID: u8
+KeyLen: varint
+Key: bytes
+```
+
+### Constructor
+
+```go
+func TensorRef(storeID uint8, key []byte) *Value
+```
+
+**Example:**
+
+```go
+// Reference tensor in store 0 with UUID key
+uuid := []byte{0x01, 0x02, /* ... 16 bytes */}
+val := cowrie.TensorRef(0, uuid)
+
+ref := val.TensorRef()
+fmt.Printf("Store: %d, Key: %x\n", ref.StoreID, ref.Key)
+```
+
+### Accessor
+
+```go
+func (v *Value) TensorRef() TensorRefData
+```
+
+---
+
+## Image
+
+### ImageData Type
+
+```go
+type ImageData struct {
+    Format ImageFormat // Image format
+    Width  uint16      // Width in pixels
+    Height uint16      // Height in pixels
+    Data   []byte      // Encoded image bytes
+}
+```
+
+### ImageFormat Constants
+
+```go
+type ImageFormat uint8
+
+const (
+    ImageFormatJPEG ImageFormat = 0x01
+    ImageFormatPNG  ImageFormat = 0x02
+    ImageFormatWEBP ImageFormat = 0x03
+    ImageFormatAVIF ImageFormat = 0x04
+    ImageFormatBMP  ImageFormat = 0x05
+)
+```
+
+**Wire format:**
+
+```
+Tag: 0x22
+Format: u8
+Width: u16 (little-endian)
+Height: u16 (little-endian)
+DataLen: varint
+Data: encoded image bytes
+```
+
+### Constructor
+
+```go
+func Image(format ImageFormat, width, height uint16, data []byte) *Value
+```
+
+**Example:**
+
+```go
+import "os"
+
+// Read JPEG file
+jpegData, _ := os.ReadFile("photo.jpg")
+val := cowrie.Image(cowrie.ImageFormatJPEG, 1920, 1080, jpegData)
+
+img := val.Image()
+fmt.Printf("%dx%d %s image\n", img.Width, img.Height, formatName(img.Format))
+```
+
+### Accessor
+
+```go
+func (v *Value) Image() ImageData
+```
+
+---
+
+## Audio
+
+### AudioData Type
+
+```go
+type AudioData struct {
+    Encoding   AudioEncoding // Audio encoding
+    SampleRate uint32        // Sample rate in Hz
+    Channels   uint8         // Number of channels
+    Data       []byte        // Audio data bytes
+}
+```
+
+### AudioEncoding Constants
+
+```go
+type AudioEncoding uint8
+
+const (
+    AudioEncodingPCMInt16   AudioEncoding = 0x01
+    AudioEncodingPCMFloat32 AudioEncoding = 0x02
+    AudioEncodingOPUS       AudioEncoding = 0x03
+    AudioEncodingAAC        AudioEncoding = 0x04
+)
+```
+
+**Wire format:**
+
+```
+Tag: 0x23
+Encoding: u8
+SampleRate: u32 (little-endian)
+Channels: u8
+DataLen: varint
+Data: audio bytes
+```
+
+### Constructor
+
+```go
+func Audio(encoding AudioEncoding, sampleRate uint32, channels uint8, data []byte) *Value
+```
+
+**Example:**
+
+```go
+// 16-bit PCM audio at 44.1kHz, stereo
+pcmData := []byte{ /* ... */ }
+val := cowrie.Audio(cowrie.AudioEncodingPCMInt16, 44100, 2, pcmData)
+
+audio := val.Audio()
+fmt.Printf("%d Hz, %d channels\n", audio.SampleRate, audio.Channels)
+```
+
+### Accessor
+
+```go
+func (v *Value) Audio() AudioData
+```
+
+---
+
+## Type Summary
+
+| Type | Tag | Size | Description |
+|------|-----|------|-------------|
+| Decimal128 | 0x0A | 17 bytes | High-precision decimal (scale + 16-byte coefficient) |
+| Datetime64 | 0x0B | 8 bytes | Nanosecond timestamp since Unix epoch |
+| UUID128 | 0x0C | 16 bytes | Native UUID (no string conversion) |
+| BigInt | 0x0D | Variable | Arbitrary-precision integer |
+| TagExt | 0x0E | Variable | Forward-compatible extension envelope |
+| Tensor | 0x20 | Variable | ML tensor data with dtype and shape |
+| TensorRef | 0x21 | Variable | Reference to external tensor |
+| Image | 0x22 | Variable | Image with format and dimensions |
+| Audio | 0x23 | Variable | Audio with encoding and sample rate |
+
+---
+
+## Use Cases
+
+### Financial Data
+
+```go
+// High-precision currency values
+var coef [16]byte
+binary.BigEndian.PutUint64(coef[8:], 123456) // $1234.56
+price := cowrie.NewDecimal128(2, coef)
+
+order := cowrie.Object(
+    cowrie.Member{Key: "symbol", Value: cowrie.String("AAPL")},
+    cowrie.Member{Key: "price", Value: price},
+    cowrie.Member{Key: "timestamp", Value: cowrie.Datetime(time.Now())},
+)
+```
+
+### ML Embeddings
+
+```go
+// Store 768-dimensional BERT embedding
+embedding := make([]byte, 768*4) // 768 float32s
+// ... fill with model output ...
+
+record := cowrie.Object(
+    cowrie.Member{Key: "text", Value: cowrie.String("Hello world")},
+    cowrie.Member{Key: "embedding", Value: cowrie.Tensor(
+        cowrie.DTypeFloat32,
+        []uint64{768},
+        embedding,
+    )},
+)
+```
+
+### Multimodal Data
+
+```go
+// Image + caption + metadata
+imgData, _ := os.ReadFile("photo.jpg")
+
+multimodal := cowrie.Object(
+    cowrie.Member{Key: "image", Value: cowrie.Image(
+        cowrie.ImageFormatJPEG, 1920, 1080, imgData,
+    )},
+    cowrie.Member{Key: "caption", Value: cowrie.String("Sunset over mountains")},
+    cowrie.Member{Key: "captured_at", Value: cowrie.Datetime(time.Now())},
+    cowrie.Member{Key: "id", Value: cowrie.UUID128(uuid)},
+)
+```
+
+---
+
+## See Also
+
+- [Core Types](/api/gen2/types) - Basic types (Null, Bool, Int64, Float64, String, Bytes, Array, Object)
+- [Encode & Decode](/api/gen2/encode-decode) - Encoding/decoding with security limits
+- [Graph Types](/api/gen2/extended-types#graph-types) - Node, Edge, NodeBatch, EdgeBatch, GraphShard
+- [ColumnReader](/api/gen2/column-reader) - Efficient tensor column extraction

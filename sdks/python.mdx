@@ -1,0 +1,530 @@
+---
+title: 'Python SDK'
+description: 'Cowrie binary JSON codec implementation for Python'
+---
+
+# Python SDK
+
+The Python implementation provides an intuitive API with NumPy integration and optional compression support.
+
+## Installation
+
+```bash
+pip install cowrie
+
+# Or from source:
+cd python
+pip install -e .
+```
+
+### Optional Dependencies
+
+```bash
+# For compression support
+pip install zstandard
+
+# For NumPy integration
+pip install numpy
+```
+
+## Imports
+
+<Tabs>
+  <Tab title="Gen2 (Full)">
+    ```python
+    from cowrie import gen2
+    
+    # Or specific imports
+    from cowrie.gen2 import encode, decode, Value
+    ```
+  </Tab>
+  <Tab title="Gen1 (Lightweight)">
+    ```python
+    from cowrie import gen1
+    
+    # Or specific imports
+    from cowrie.gen1 import encode, decode
+    ```
+  </Tab>
+</Tabs>
+
+## Basic Usage
+
+### Gen2: Encode & Decode
+
+<CodeGroup>
+```python Encode
+from cowrie.gen2 import encode, Value
+
+# From Python dict/list
+data = encode({
+    "name": "Alice",
+    "age": 30,
+    "score": 98.5,
+})
+
+# Or using Value API
+val = Value.object([
+    ("name", Value.string("Alice")),
+    ("age", Value.int64(30)),
+    ("score", Value.float64(98.5)),
+])
+data = encode(val)
+```
+
+```python Decode
+from cowrie.gen2 import decode
+
+result = decode(data)
+
+# Result is a dict
+print(result["name"])   # "Alice"
+print(result["age"])    # 30
+print(result["score"])  # 98.5
+```
+</CodeGroup>
+
+### Gen1: Lightweight Encoding
+
+```python
+from cowrie.gen1 import encode, decode
+
+# Encode any JSON-compatible data
+data = encode({
+    "name": "Alice",
+    "scores": [1.0, 2.0, 3.0],
+})
+
+# Decode to Python types
+result = decode(data)
+print(result["name"])  # "Alice"
+```
+
+## Type System
+
+### Creating Values (Gen2)
+
+<CodeGroup>
+```python Primitives
+from cowrie.gen2 import Value
+
+# Scalars
+null_val = Value.null()
+bool_val = Value.bool(True)
+int_val = Value.int64(42)
+uint_val = Value.uint64(100)
+float_val = Value.float64(3.14)
+str_val = Value.string("hello")
+bytes_val = Value.bytes(b"\x01\x02")
+```
+
+```python Collections
+# Array
+arr = Value.array([
+    Value.int64(1),
+    Value.int64(2),
+    Value.int64(3),
+])
+
+# Object
+obj = Value.object([
+    ("x", Value.int64(10)),
+    ("y", Value.int64(20)),
+])
+```
+
+```python Extended Types
+from datetime import datetime
+from uuid import UUID
+from decimal import Decimal
+
+# UUID
+uuid = Value.uuid128(UUID("12345678-1234-5678-1234-567812345678"))
+
+# Datetime
+dt = Value.datetime64(datetime.now())
+
+# BigInt
+big = Value.bigint(123456789012345678901234567890)
+
+# Decimal128
+dec = Value.decimal128(Decimal("123.45"))
+```
+</CodeGroup>
+
+### ML Types
+
+```python
+import numpy as np
+from cowrie.gen2 import Value, DType
+
+# Tensor (from NumPy)
+array = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+tensor = Value.tensor(
+    dtype=DType.FLOAT32,
+    shape=(2, 2),
+    data=array.tobytes(),
+)
+
+# Or use from_numpy helper
+tensor = Value.from_numpy(array)
+
+# Image
+with open("image.jpg", "rb") as f:
+    image_data = f.read()
+
+img = Value.image(
+    format="jpeg",
+    width=1920,
+    height=1080,
+    data=image_data,
+)
+
+# Audio
+audio = Value.audio(
+    encoding="pcm_int16",
+    sample_rate=44100,
+    channels=2,
+    data=audio_bytes,
+)
+```
+
+### Graph Types
+
+```python
+from cowrie.gen2 import Value
+
+# Node
+node = Value.node(
+    id="person_42",
+    labels=["Person", "Employee"],
+    props={
+        "name": Value.string("Alice"),
+        "age": Value.int64(30),
+    },
+)
+
+# Edge
+edge = Value.edge(
+    src="person_42",
+    dst="company_1",
+    edge_type="WORKS_AT",
+    props={
+        "since": Value.int64(2020),
+    },
+)
+
+# Graph Shard
+shard = Value.graph_shard(
+    nodes=[node],
+    edges=[edge],
+    metadata={"version": 1},
+)
+```
+
+## Type Conversion
+
+### Automatic Conversion
+
+```python
+from cowrie.gen2 import encode, decode
+
+# Python types are automatically converted
+data = encode({
+    "name": "Alice",
+    "age": 30,
+    "scores": [98.5, 87.3, 92.1],
+    "active": True,
+    "metadata": None,
+})
+
+# Decode back to Python types
+result = decode(data)
+print(type(result))  # <class 'dict'>
+```
+
+### Using from_any / to_any
+
+```python
+from cowrie.gen2 import Value
+
+# Convert Python value to Cowrie Value
+val = Value.from_any({
+    "name": "Alice",
+    "age": 30,
+})
+
+# Convert Cowrie Value back to Python
+python_val = val.to_any()
+print(python_val)  # {'name': 'Alice', 'age': 30}
+```
+
+## JSON Bridge
+
+<CodeGroup>
+```python To JSON
+from cowrie.gen2 import to_json, Value
+
+val = Value.object([
+    ("name", Value.string("Alice")),
+    ("age", Value.int64(30)),
+])
+
+json_str = to_json(val)
+print(json_str)  # {"name":"Alice","age":30}
+```
+
+```python From JSON
+from cowrie.gen2 import from_json, encode
+
+json_str = '{"name":"Alice","age":30}'
+val = from_json(json_str)
+
+# Encode to Cowrie binary
+data = encode(val)
+```
+</CodeGroup>
+
+## Compression
+
+```python
+from cowrie.gen2 import encode, decode, Compression
+
+# Encode with compression
+data = encode(
+    {"name": "Alice", "data": [1.0] * 10000},
+    compression=Compression.ZSTD,  # or Compression.GZIP
+)
+
+# Decode (automatically detects compression)
+result = decode(data)
+```
+
+## Streaming
+
+### Write to File
+
+```python
+from cowrie.gen2 import encode
+
+data = encode({"name": "Alice", "age": 30})
+
+with open("output.cowrie", "wb") as f:
+    f.write(data)
+```
+
+### Read from File
+
+```python
+from cowrie.gen2 import decode
+
+with open("data.cowrie", "rb") as f:
+    data = f.read()
+    result = decode(data)
+```
+
+### Stream Frames
+
+```python
+from cowrie.gen2 import write_framed, read_framed
+import io
+
+# Write multiple values to a stream
+buf = io.BytesIO()
+write_framed(buf, {"type": "event1", "data": 42})
+write_framed(buf, {"type": "event2", "data": 43})
+
+# Read values back
+buf.seek(0)
+val1 = read_framed(buf)
+val2 = read_framed(buf)
+```
+
+## NumPy Integration
+
+```python
+import numpy as np
+from cowrie.gen2 import encode, decode, Value
+
+# Encode NumPy array as tensor
+array = np.random.rand(100, 100).astype(np.float32)
+val = Value.from_numpy(array)
+data = encode(val)
+
+# Decode back to NumPy
+result = decode(data)
+if isinstance(result, dict) and result.get("__tensor__"):
+    restored = Value.to_numpy(result)
+    print(restored.shape)  # (100, 100)
+```
+
+## Error Handling
+
+```python
+from cowrie.gen2 import decode, SecurityLimitExceeded
+
+try:
+    result = decode(data)
+except SecurityLimitExceeded as e:
+    print(f"Security limit exceeded: {e}")
+except ValueError as e:
+    print(f"Invalid data: {e}")
+except Exception as e:
+    print(f"Decode error: {e}")
+```
+
+## Security Options
+
+```python
+from cowrie.gen2 import decode, DecodeOptions
+
+opts = DecodeOptions(
+    max_depth=500,
+    max_array_len=1_000_000,
+    max_object_len=100_000,
+    max_string_len=10_000_000,
+    max_bytes_len=100_000_000,
+)
+
+result = decode(data, options=opts)
+```
+
+## Type Hints
+
+The Python SDK includes full type hints:
+
+```python
+from typing import Any, Dict, List
+from cowrie.gen2 import encode, decode, Value
+
+def process_data(data: bytes) -> Dict[str, Any]:
+    result: Dict[str, Any] = decode(data)
+    return result
+
+def create_value(name: str, age: int) -> Value:
+    return Value.object([
+        ("name", Value.string(name)),
+        ("age", Value.int64(age)),
+    ])
+```
+
+## Advanced Features
+
+### Custom Type Handlers
+
+```python
+from datetime import datetime
+from cowrie.gen2 import Value
+
+def encode_custom(obj):
+    """Convert custom Python objects to Cowrie values."""
+    if isinstance(obj, datetime):
+        return Value.datetime64(obj)
+    elif hasattr(obj, "to_dict"):
+        return Value.from_any(obj.to_dict())
+    else:
+        raise TypeError(f"Cannot encode {type(obj)}")
+
+class Person:
+    def __init__(self, name, age):
+        self.name = name
+        self.age = age
+    
+    def to_dict(self):
+        return {"name": self.name, "age": self.age}
+
+person = Person("Alice", 30)
+val = encode_custom(person)
+```
+
+### Batch Operations
+
+```python
+from cowrie.gen2 import encode
+
+# Encode multiple values efficiently
+values = [
+    {"id": i, "name": f"user_{i}"}
+    for i in range(1000)
+]
+
+encoded_batch = [encode(v) for v in values]
+```
+
+## Performance Tips
+
+1. **Use Gen1 for simple data**: Faster for JSON-compatible data
+
+2. **Reuse buffers**: For high-throughput scenarios
+   ```python
+   from io import BytesIO
+   buf = BytesIO()
+   ```
+
+3. **Batch encode**: Process multiple items together
+
+4. **Enable compression**: For large, repetitive data
+   ```python
+   encode(data, compression=Compression.ZSTD)
+   ```
+
+5. **Use type hints**: Helps with IDE autocomplete and catches errors early
+
+## Examples
+
+### Complete Example
+
+```python
+from cowrie.gen2 import encode, decode, Value
+import numpy as np
+
+def main():
+    # Create a complex value
+    data = {
+        "user": {
+            "name": "Alice",
+            "id": 12345,
+        },
+        "scores": [98.5, 87.3, 92.1],
+        "embedding": np.random.rand(384).astype(np.float32),
+        "active": True,
+    }
+    
+    # Convert NumPy array to tensor
+    val = Value.from_any(data)
+    
+    # Encode
+    encoded = encode(val)
+    print(f"Encoded size: {len(encoded)} bytes")
+    
+    # Decode
+    decoded = decode(encoded)
+    
+    # Process
+    print(f"User: {decoded['user']['name']}")
+    print(f"Scores: {decoded['scores']}")
+
+if __name__ == "__main__":
+    main()
+```
+
+### Django/Flask Integration
+
+```python
+from flask import Flask, request, Response
+from cowrie.gen2 import encode, decode
+
+app = Flask(__name__)
+
+@app.route("/api/data", methods=["POST"])
+def receive_data():
+    # Decode Cowrie payload
+    data = decode(request.data)
+    
+    # Process data
+    result = process(data)
+    
+    # Encode response
+    response_data = encode(result)
+    return Response(response_data, mimetype="application/x-cowrie")
+```

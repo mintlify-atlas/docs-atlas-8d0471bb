@@ -1,0 +1,359 @@
+---
+title: Decode Command
+description: Convert Cowrie binary format back to JSON with automatic format detection
+---
+
+## Overview
+
+The `decode` command reads Cowrie binary format from stdin and writes JSON to stdout. It automatically detects and handles both compressed and uncompressed formats.
+
+## Syntax
+
+```bash
+cowrie decode [--gen1|--gen2] [--pretty] < input.cowrie > output.json
+```
+
+## Flags
+
+### `--gen1`
+Force Gen1 codec for decoding.
+
+```bash
+cowrie decode --gen1 < data.cowrie > output.json
+```
+
+### `--gen2`
+Use Gen2 codec (default). Automatically handles compression detection.
+
+```bash
+cowrie decode --gen2 < data.cowrie > output.json
+```
+
+### `--pretty`
+Pretty-print JSON output with indentation.
+
+```bash
+cowrie decode --pretty < data.cowrie > formatted.json
+```
+
+Output example:
+```json
+{
+  "name": "Alice",
+  "age": 30,
+  "roles": [
+    "admin",
+    "user"
+  ]
+}
+```
+
+## Examples
+
+### Basic Decoding
+
+Decode a Cowrie file to JSON:
+```bash
+cowrie decode < data.cowrie
+```
+
+Save to file:
+```bash
+cowrie decode < data.cowrie > output.json
+```
+
+### Pretty-Printed Output
+
+Get human-readable JSON:
+```bash
+cowrie decode --pretty < data.cowrie
+```
+
+Example output:
+```bash
+$ echo '{"name":"Alice","age":30}' | cowrie encode | cowrie decode --pretty
+{
+  "name": "Alice",
+  "age": 30
+}
+```
+
+### Compressed Files
+
+Gen2 automatically detects and decompresses:
+```bash
+# Decode zstd-compressed file
+cowrie decode < data.cowrie.zst > output.json
+
+# Decode gzip-compressed file
+cowrie decode < data.cowrie.gz > output.json
+```
+
+No special flags needed - compression is detected automatically!
+
+### From Gen1 Files
+
+Decode Gen1 format:
+```bash
+cowrie decode --gen1 < gen1-data.cowrie > output.json
+```
+
+### Pipeline Processing
+
+Decode and pipe to other tools:
+```bash
+# Decode and filter with jq
+cowrie decode < users.cowrie | jq '.users[] | select(.active == true)'
+
+# Decode and count records
+cowrie decode < data.cowrie | jq '.records | length'
+
+# Decode and prettify
+cowrie decode < data.cowrie | jq '.'
+```
+
+### Round-Trip Verification
+
+Verify encoding/decoding preserves data:
+```bash
+# Original
+echo '{"test":"data"}' | tee original.json | \
+  cowrie encode | \
+  cowrie decode > decoded.json
+
+# Compare
+diff original.json decoded.json
+```
+
+### Batch Decoding
+
+Decode multiple files:
+```bash
+for file in *.cowrie; do
+  cowrie decode < "$file" > "${file%.cowrie}.json"
+done
+```
+
+With pretty printing:
+```bash
+for file in *.cowrie; do
+  cowrie decode --pretty < "$file" > "${file%.cowrie}.json"
+done
+```
+
+## Real-World Use Cases
+
+### API Cache Retrieval
+
+Read cached API responses:
+```bash
+cowrie decode < cache/response.cowrie | jq '.data.results[]'
+```
+
+### Log Analysis
+
+Decode and analyze archived logs:
+```bash
+cowrie decode < archive/app-2026-03-04.cowrie | \
+  jq -r '.[] | select(.level == "ERROR") | .message'
+```
+
+### Configuration Loading
+
+Load binary config files:
+```bash
+cowrie decode < /etc/app/config.cowrie > /tmp/config.json
+cat /tmp/config.json | jq '.database.host'
+```
+
+### Data Export
+
+Convert binary data to JSON for external tools:
+```bash
+cowrie decode < data.cowrie | \
+  python analyze.py --input-format json
+```
+
+### Format Inspection
+
+Decode and inspect structure:
+```bash
+cowrie decode --pretty < mystery.cowrie | head -n 20
+```
+
+## Format Detection
+
+Gen2's `DecodeFramed` function automatically detects:
+
+- **Uncompressed** - Raw Cowrie binary
+- **Gzip compression** - Decompresses transparently
+- **Zstd compression** - Decompresses transparently
+
+Example with different formats:
+```bash
+# All work with same decode command
+cowrie decode < uncompressed.cowrie > out1.json
+cowrie decode < gzip-compressed.cowrie > out2.json
+cowrie decode < zstd-compressed.cowrie > out3.json
+```
+
+## Output
+
+The decode command writes JSON to stdout:
+
+- **Default**: Compact JSON (one line)
+- **With --pretty**: Indented JSON (2 spaces)
+- **Always includes newline** at end of output
+
+### Compact Output
+```bash
+$ cowrie decode < data.cowrie
+{"name":"Alice","age":30,"roles":["admin","user"]}
+```
+
+### Pretty Output
+```bash
+$ cowrie decode --pretty < data.cowrie
+{
+  "name": "Alice",
+  "age": 30,
+  "roles": [
+    "admin",
+    "user"
+  ]
+}
+```
+
+## Error Handling
+
+Common errors and solutions:
+
+### Corrupted File
+```bash
+$ cowrie decode < corrupted.cowrie
+Error decoding: unexpected EOF
+```
+
+**Solution:** Verify file integrity, re-encode if needed.
+
+### Wrong Codec Version
+```bash
+$ cowrie decode --gen2 < gen1-file.cowrie
+# May fail or produce unexpected results
+```
+
+**Solution:** Use `cowrie info` to check format first:
+```bash
+cowrie info < gen1-file.cowrie
+cowrie decode --gen1 < gen1-file.cowrie > output.json
+```
+
+### Empty Input
+```bash
+$ echo '' | cowrie decode
+Error reading input: unexpected end of input
+```
+
+**Solution:** Ensure valid Cowrie binary input.
+
+### Invalid Binary Data
+```bash
+$ cat random.bin | cowrie decode
+Error decoding: invalid magic bytes
+```
+
+**Solution:** Verify input is a valid Cowrie file:
+```bash
+cowrie info < file.cowrie  # Check format first
+```
+
+## Piping Examples
+
+### Decode and Transform
+
+Extract specific fields:
+```bash
+cowrie decode < users.cowrie | jq '.users[] | {name, email}'
+```
+
+Filter results:
+```bash
+cowrie decode < data.cowrie | jq 'select(.status == "active")'
+```
+
+### Decode and Process
+
+Convert to CSV:
+```bash
+cowrie decode < data.cowrie | \
+  jq -r '.[] | [.id, .name, .email] | @csv' > output.csv
+```
+
+Count entries:
+```bash
+cowrie decode < data.cowrie | jq '. | length'
+```
+
+### Decode and Re-encode
+
+Change compression format:
+```bash
+# From gzip to zstd
+cowrie decode < data.cowrie.gz | \
+  cowrie encode --compress=zstd > data.cowrie.zst
+```
+
+Upgrade Gen1 to Gen2:
+```bash
+cowrie decode --gen1 < old.cowrie | \
+  cowrie encode --gen2 > new.cowrie
+```
+
+### Stream Processing
+
+Process large files in chunks:
+```bash
+cowrie decode < huge.cowrie | jq -c '.[]' | while read -r line; do
+  echo "$line" | process-record.sh
+done
+```
+
+## Performance Tips
+
+1. **Use --pretty only when needed** - Adds processing overhead
+2. **Pipe directly to tools** - Avoid writing intermediate JSON files
+3. **Stream process large outputs** - Use jq -c for line-by-line JSON
+4. **Let Gen2 detect compression** - No need to specify compression type
+
+## Integration Examples
+
+### With Python
+```bash
+cowrie decode < data.cowrie | python -c "
+import sys, json
+data = json.load(sys.stdin)
+print(f'Found {len(data)} records')
+"
+```
+
+### With Node.js
+```bash
+cowrie decode < data.cowrie | node -e "
+const data = JSON.parse(require('fs').readFileSync(0, 'utf-8'));
+console.log('Records:', data.length);
+"
+```
+
+### With Ruby
+```bash
+cowrie decode < data.cowrie | ruby -rjson -e "
+data = JSON.parse(STDIN.read)
+puts 'Records: ' + data.length.to_s
+"
+```
+
+## See Also
+
+- [Encode Command](/cli/encode) - Convert JSON to Cowrie binary
+- [Info Command](/cli/info) - Inspect Cowrie file metadata before decoding
+- [CLI Overview](/cli/overview) - General CLI usage

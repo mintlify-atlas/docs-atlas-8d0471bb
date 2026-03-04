@@ -1,0 +1,680 @@
+---
+title: 'ColumnReader'
+description: 'Efficient columnar access for Gen2 data with column hints'
+icon: 'table-columns'
+---
+
+## Overview
+
+ColumnReader enables selective field access without fully decoding arrays of objects. It uses column hints to extract specific fields efficiently, ideal for analytics and ML workloads.
+
+## ColumnReader Type
+
+```go
+type ColumnReader struct {
+    // Private fields
+}
+```
+
+Provides columnar access to Cowrie data using embedded column hints.
+
+---
+
+## Creating a ColumnReader
+
+### NewColumnReader
+
+```go
+func NewColumnReader(data []byte) (*ColumnReader, error)
+```
+
+Creates a reader from Gen2 data. Returns `ErrNoHints` if data has no column hints.
+
+<ParamField path="data" type="[]byte" required>
+  Encoded Gen2 data with column hints (FlagHasColumnHints set)
+</ParamField>
+
+<ResponseField name="reader" type="*ColumnReader">
+  Column reader instance
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if no hints present or invalid format
+</ResponseField>
+
+**Example:**
+
+```go
+// First, encode with hints
+hints := []cowrie.ColumnHint{
+    cowrie.NewHint("id", cowrie.HintInt64, cowrie.HintFlagRequired),
+    cowrie.NewHint("name", cowrie.HintString, cowrie.HintFlagRequired),
+    cowrie.NewTensorHint("embedding", cowrie.HintFloat32, []int{128}, cowrie.HintFlagColumnar),
+}
+
+data, _ := cowrie.EncodeWithHints(arrayValue, hints)
+
+// Then create reader
+reader, err := cowrie.NewColumnReader(data)
+if err == cowrie.ErrNoHints {
+    fmt.Println("Data has no column hints")
+    return
+}
+```
+
+---
+
+## Column Hints
+
+### ColumnHint Type
+
+```go
+type ColumnHint struct {
+    Field string    // Field path (e.g., "id", "props.embedding")
+    Type  HintType  // Expected Cowrie type
+    Shape []int     // For arrays/tensors (e.g., [128] for float32[128])
+    Flags HintFlags // Additional hints
+}
+```
+
+### HintType Constants
+
+```go
+type HintType byte
+
+const (
+    HintInt64    HintType = 0x03 // Maps to TagInt64
+    HintFloat64  HintType = 0x04 // Maps to TagFloat64
+    HintString   HintType = 0x05 // Maps to TagString
+    HintBytes    HintType = 0x08 // Maps to TagBytes
+    HintUint64   HintType = 0x09 // Maps to TagUint64
+    HintDatetime HintType = 0x0B // Maps to TagDatetime64
+    HintUUID     HintType = 0x0C // Maps to TagUUID128
+    HintFloat32  HintType = 0x14 // For tensor data (not a base type)
+)
+```
+
+### HintFlags Constants
+
+```go
+type HintFlags byte
+
+const (
+    HintFlagRequired  HintFlags = 0x01 // Field appears in most objects
+    HintFlagColumnar  HintFlags = 0x02 // Suitable for columnar reading
+    HintFlagFixedSize HintFlags = 0x04 // Array has fixed element size
+    HintFlagSorted    HintFlags = 0x08 // Values are sorted
+)
+```
+
+### Creating Hints
+
+#### NewHint
+
+```go
+func NewHint(field string, typ HintType, flags HintFlags) ColumnHint
+```
+
+Creates a simple hint without shape.
+
+**Example:**
+
+```go
+hint := cowrie.NewHint("user_id", cowrie.HintInt64, cowrie.HintFlagRequired)
+```
+
+#### NewTensorHint
+
+```go
+func NewTensorHint(field string, typ HintType, shape []int, flags HintFlags) ColumnHint
+```
+
+Creates a hint for tensor/array data with shape. Automatically sets `HintFlagFixedSize`.
+
+**Example:**
+
+```go
+// 768-dimensional BERT embedding
+hint := cowrie.NewTensorHint(
+    "embedding",
+    cowrie.HintFloat32,
+    []int{768},
+    cowrie.HintFlagColumnar,
+)
+```
+
+---
+
+## Querying Hints
+
+### Hints
+
+```go
+func (cr *ColumnReader) Hints() []ColumnHint
+```
+
+Returns all column hints, or nil if none.
+
+**Example:**
+
+```go
+for _, hint := range reader.Hints() {
+    fmt.Printf("Field: %s, Type: %s\n", hint.Field, hint.Type)
+}
+```
+
+### GetHint
+
+```go
+func (cr *ColumnReader) GetHint(field string) *ColumnHint
+```
+
+Returns the hint for a specific field, or nil if not found.
+
+**Example:**
+
+```go
+if hint := reader.GetHint("embedding"); hint != nil {
+    fmt.Printf("Embedding shape: %v\n", hint.Shape)
+}
+```
+
+### Fields
+
+```go
+func (cr *ColumnReader) Fields() []string
+```
+
+Returns all field names from hints.
+
+**Example:**
+
+```go
+fields := reader.Fields()
+fmt.Println("Available fields:", fields)
+// Output: [id name embedding timestamp]
+```
+
+---
+
+## Reading Columns
+
+### ReadColumn
+
+```go
+func (cr *ColumnReader) ReadColumn(field string) ([]*Value, error)
+```
+
+Extracts a column of values for a field. Root must be an array of objects.
+
+<ParamField path="field" type="string" required>
+  Field name to extract
+</ParamField>
+
+<ResponseField name="values" type="[]*Value">
+  Slice of values, one per array element. Nil for missing fields.
+</ResponseField>
+
+**Example:**
+
+```go
+// Extract "name" column from array of user objects
+names, err := reader.ReadColumn("name")
+if err != nil {
+    log.Fatal(err)
+}
+
+for i, val := range names {
+    if val != nil && val.Type() == cowrie.TypeString {
+        fmt.Printf("Row %d: %s\n", i, val.String())
+    }
+}
+```
+
+---
+
+### Typed Column Readers
+
+These methods extract typed columns with validity masks.
+
+#### ReadInt64Column
+
+```go
+func (cr *ColumnReader) ReadInt64Column(field string) ([]int64, []bool, error)
+```
+
+Extracts int64 values with validity mask.
+
+<ResponseField name="values" type="[]int64">
+  Int64 values (0 for invalid entries)
+</ResponseField>
+
+<ResponseField name="valid" type="[]bool">
+  Validity mask (true = valid, false = null/missing)
+</ResponseField>
+
+**Example:**
+
+```go
+ids, valid, err := reader.ReadInt64Column("user_id")
+if err != nil {
+    log.Fatal(err)
+}
+
+for i := range ids {
+    if valid[i] {
+        fmt.Printf("User ID: %d\n", ids[i])
+    } else {
+        fmt.Println("User ID: null")
+    }
+}
+```
+
+#### ReadFloat64Column
+
+```go
+func (cr *ColumnReader) ReadFloat64Column(field string) ([]float64, []bool, error)
+```
+
+**Example:**
+
+```go
+scores, valid, _ := reader.ReadFloat64Column("score")
+sum := 0.0
+count := 0
+for i := range scores {
+    if valid[i] {
+        sum += scores[i]
+        count++
+    }
+}
+avg := sum / float64(count)
+```
+
+#### ReadStringColumn
+
+```go
+func (cr *ColumnReader) ReadStringColumn(field string) ([]string, []bool, error)
+```
+
+**Example:**
+
+```go
+names, valid, _ := reader.ReadStringColumn("name")
+for i := range names {
+    if valid[i] {
+        fmt.Println(names[i])
+    }
+}
+```
+
+#### ReadDatetimeColumn
+
+```go
+func (cr *ColumnReader) ReadDatetimeColumn(field string) ([]int64, []bool, error)
+```
+
+Returns nanoseconds since Unix epoch.
+
+**Example:**
+
+```go
+timestamps, valid, _ := reader.ReadDatetimeColumn("created_at")
+for i := range timestamps {
+    if valid[i] {
+        t := time.Unix(0, timestamps[i])
+        fmt.Println(t.Format(time.RFC3339))
+    }
+}
+```
+
+#### ReadBytesColumn
+
+```go
+func (cr *ColumnReader) ReadBytesColumn(field string) ([][]byte, []bool, error)
+```
+
+**Example:**
+
+```go
+data, valid, _ := reader.ReadBytesColumn("signature")
+for i := range data {
+    if valid[i] {
+        fmt.Printf("Signature: %x\n", data[i])
+    }
+}
+```
+
+---
+
+## Tensor Column Access
+
+Efficiently extract tensor data stored as bytes with shape information from hints.
+
+### ReadFloat32Tensor
+
+```go
+func (cr *ColumnReader) ReadFloat32Tensor(field string) ([][]float32, error)
+```
+
+Extracts float32 tensor data using shape from hint. Each row contains a flattened tensor.
+
+<ParamField path="field" type="string" required>
+  Field name (must have HintFloat32 hint with shape)
+</ParamField>
+
+<ResponseField name="tensors" type="[][]float32">
+  Slice of tensors, one per row. Nil entries for missing/invalid data.
+</ResponseField>
+
+**Example:**
+
+```go
+// Extract 128-dim embeddings
+embeddings, err := reader.ReadFloat32Tensor("embedding")
+if err != nil {
+    log.Fatal(err)
+}
+
+for i, emb := range embeddings {
+    if emb != nil {
+        fmt.Printf("Row %d: %d-dim embedding\n", i, len(emb))
+        // emb is []float32 with 128 elements
+    }
+}
+```
+
+**Use case: Batch inference**
+
+```go
+// Load embeddings from columnar format
+embeddings, _ := reader.ReadFloat32Tensor("embedding")
+
+// Batch inference
+results := make([]float32, len(embeddings))
+for i, emb := range embeddings {
+    if emb != nil {
+        results[i] = model.Predict(emb)
+    }
+}
+```
+
+### ReadFloat64Tensor
+
+```go
+func (cr *ColumnReader) ReadFloat64Tensor(field string) ([][]float64, error)
+```
+
+Same as ReadFloat32Tensor but for float64 data.
+
+**Example:**
+
+```go
+// Extract high-precision feature vectors
+features, _ := reader.ReadFloat64Tensor("features")
+for i, vec := range features {
+    if vec != nil {
+        // vec is []float64
+        mean := average(vec)
+        fmt.Printf("Row %d mean: %f\n", i, mean)
+    }
+}
+```
+
+---
+
+## Statistics
+
+### Stats
+
+```go
+func (cr *ColumnReader) Stats(field string) (*ColumnStats, error)
+```
+
+Returns statistics about a column.
+
+```go
+type ColumnStats struct {
+    Count      int // Total rows
+    ValidCount int // Non-null values
+    NullCount  int // Null or missing values
+}
+```
+
+**Example:**
+
+```go
+stats, err := reader.Stats("email")
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Total: %d, Valid: %d, Null: %d\n",
+    stats.Count, stats.ValidCount, stats.NullCount)
+fmt.Printf("Null rate: %.2f%%\n",
+    float64(stats.NullCount) / float64(stats.Count) * 100)
+```
+
+---
+
+## Root Access
+
+### Root
+
+```go
+func (cr *ColumnReader) Root() (*Value, error)
+```
+
+Returns the fully decoded root value. Lazily decodes on first call.
+
+**Example:**
+
+```go
+root, err := reader.Root()
+if err != nil {
+    log.Fatal(err)
+}
+
+if root.Type() == cowrie.TypeArray {
+    fmt.Printf("Array with %d elements\n", root.Len())
+}
+```
+
+### Len
+
+```go
+func (cr *ColumnReader) Len() (int, error)
+```
+
+Returns the number of rows if root is an array, or -1 otherwise.
+
+**Example:**
+
+```go
+count, err := reader.Len()
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Dataset has %d rows\n", count)
+```
+
+---
+
+## Complete Example
+
+### Encoding with Hints
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/cowrie/cowrie/go"
+)
+
+func main() {
+    // Create dataset: array of user objects
+    users := cowrie.Array(
+        cowrie.Object(
+            cowrie.Member{Key: "id", Value: cowrie.Int64(1)},
+            cowrie.Member{Key: "name", Value: cowrie.String("Alice")},
+            cowrie.Member{Key: "embedding", Value: makeEmbedding(128)},
+        ),
+        cowrie.Object(
+            cowrie.Member{Key: "id", Value: cowrie.Int64(2)},
+            cowrie.Member{Key: "name", Value: cowrie.String("Bob")},
+            cowrie.Member{Key: "embedding", Value: makeEmbedding(128)},
+        ),
+    )
+
+    // Define column hints
+    hints := []cowrie.ColumnHint{
+        cowrie.NewHint("id", cowrie.HintInt64, cowrie.HintFlagRequired),
+        cowrie.NewHint("name", cowrie.HintString, cowrie.HintFlagRequired),
+        cowrie.NewTensorHint("embedding", cowrie.HintFloat32, []int{128}, cowrie.HintFlagColumnar),
+    }
+
+    // Encode with hints
+    data, _ := cowrie.EncodeWithHints(users, hints)
+    fmt.Printf("Encoded %d bytes with hints\n", len(data))
+}
+
+func makeEmbedding(dim int) *cowrie.Value {
+    data := make([]byte, dim*4)
+    // ... fill with float32 data ...
+    return cowrie.Bytes(data)
+}
+```
+
+### Reading Columns
+
+```go
+func analyzeUsers(data []byte) error {
+    // Create column reader
+    reader, err := cowrie.NewColumnReader(data)
+    if err != nil {
+        return err
+    }
+
+    // Get dataset size
+    count, _ := reader.Len()
+    fmt.Printf("Dataset: %d users\n", count)
+
+    // Extract ID column
+    ids, valid, _ := reader.ReadInt64Column("id")
+    fmt.Println("User IDs:", ids)
+
+    // Extract name column
+    names, valid, _ := reader.ReadStringColumn("name")
+    for i := range names {
+        if valid[i] {
+            fmt.Printf("User %d: %s\n", ids[i], names[i])
+        }
+    }
+
+    // Extract embedding column (efficient!)
+    embeddings, _ := reader.ReadFloat32Tensor("embedding")
+    for i, emb := range embeddings {
+        if emb != nil {
+            fmt.Printf("User %d: %d-dim embedding\n", ids[i], len(emb))
+            // Process embedding...
+        }
+    }
+
+    return nil
+}
+```
+
+---
+
+## Use Cases
+
+### ML Training Data
+
+```go
+// Load training batch with columnar access
+func loadBatch(data []byte) ([][]float32, []int64, error) {
+    reader, _ := cowrie.NewColumnReader(data)
+    
+    // Extract features (efficient columnar read)
+    features, err := reader.ReadFloat32Tensor("features")
+    if err != nil {
+        return nil, nil, err
+    }
+    
+    // Extract labels
+    labels, valid, err := reader.ReadInt64Column("label")
+    if err != nil {
+        return nil, nil, err
+    }
+    
+    // Filter out invalid entries
+    validFeatures := make([][]float32, 0, len(features))
+    validLabels := make([]int64, 0, len(labels))
+    for i := range features {
+        if features[i] != nil && valid[i] {
+            validFeatures = append(validFeatures, features[i])
+            validLabels = append(validLabels, labels[i])
+        }
+    }
+    
+    return validFeatures, validLabels, nil
+}
+```
+
+### Analytics Query
+
+```go
+// Compute average score by category
+func analyzeScores(data []byte) (map[string]float64, error) {
+    reader, _ := cowrie.NewColumnReader(data)
+    
+    categories, catValid, _ := reader.ReadStringColumn("category")
+    scores, scoreValid, _ := reader.ReadFloat64Column("score")
+    
+    sums := make(map[string]float64)
+    counts := make(map[string]int)
+    
+    for i := range categories {
+        if catValid[i] && scoreValid[i] {
+            cat := categories[i]
+            sums[cat] += scores[i]
+            counts[cat]++
+        }
+    }
+    
+    averages := make(map[string]float64)
+    for cat, sum := range sums {
+        averages[cat] = sum / float64(counts[cat])
+    }
+    
+    return averages, nil
+}
+```
+
+---
+
+## Performance Tips
+
+1. **Use hints**: Always encode with hints for columnar workloads
+2. **Batch reads**: Extract multiple columns in sequence (amortizes decoding cost)
+3. **Tensor hints**: Use `NewTensorHint` for fixed-size embedding columns
+4. **Shape information**: Provide accurate shapes to enable zero-copy tensor views
+5. **Flags**: Mark frequent fields with `HintFlagRequired` for optimization
+
+---
+
+## Errors
+
+- `ErrNoHints` - Data has no column hints (FlagHasColumnHints not set)
+- `ErrFieldNotFound` - Requested field not in hints
+- `ErrIncompatibleType` - Field type doesn't match hint (e.g., reading Float32Tensor on HintInt64)
+- `ErrArrayRequired` - Root value is not an array (columnar access requires array of objects)
+
+---
+
+## See Also
+
+- [Encode & Decode](/api/gen2/encode-decode) - EncodeWithHints, DecodeWithHints
+- [Extended Types](/api/gen2/extended-types) - Tensor, TensorRef, and ML types
+- [Core Types](/api/gen2/types) - Array, Object, and basic types

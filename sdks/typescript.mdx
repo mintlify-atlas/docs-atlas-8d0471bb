@@ -1,0 +1,608 @@
+---
+title: 'TypeScript SDK'
+description: 'Cowrie binary JSON codec implementation for TypeScript/JavaScript'
+---
+
+# TypeScript SDK
+
+The TypeScript implementation provides full type safety, works in Node.js and browsers, and has zero dependencies.
+
+## Installation
+
+<Tabs>
+  <Tab title="npm">
+    ```bash
+    npm install cowrie-codec
+    ```
+  </Tab>
+  <Tab title="yarn">
+    ```bash
+    yarn add cowrie-codec
+    ```
+  </Tab>
+  <Tab title="pnpm">
+    ```bash
+    pnpm add cowrie-codec
+    ```
+  </Tab>
+</Tabs>
+
+## Imports
+
+<Tabs>
+  <Tab title="Gen2 (Full)">
+    ```typescript
+    import { gen2 } from 'cowrie-codec';
+    // Or direct import:
+    import { encode, decode, Value } from 'cowrie-codec/gen2';
+    ```
+  </Tab>
+  <Tab title="Gen1 (Lightweight)">
+    ```typescript
+    import { gen1 } from 'cowrie-codec';
+    // Or direct import:
+    import { encode, decode } from 'cowrie-codec/gen1';
+    ```
+  </Tab>
+</Tabs>
+
+## Basic Usage
+
+### Gen2: Encode & Decode
+
+<CodeGroup>
+```typescript Encode
+import { gen2 } from 'cowrie-codec';
+
+// From plain objects
+const data = gen2.encode({
+  name: 'Alice',
+  age: 30,
+  score: 98.5,
+});
+
+// Or using Value API
+const val = gen2.SJ.object([
+  ['name', gen2.SJ.string('Alice')],
+  ['age', gen2.SJ.int64(30)],
+  ['score', gen2.SJ.float64(98.5)],
+]);
+const encoded = gen2.encode(val);
+```
+
+```typescript Decode
+import { gen2 } from 'cowrie-codec';
+
+const result = gen2.decode(data);
+
+// TypeScript knows the shape
+if (result.type === 'object') {
+  console.log(result.name);  // "Alice"
+  console.log(result.age);   // 30
+}
+```
+</CodeGroup>
+
+### Gen1: Lightweight Encoding
+
+```typescript
+import { gen1 } from 'cowrie-codec';
+
+// Encode any JSON-compatible data
+const data = gen1.encode({
+  name: 'Alice',
+  scores: [1.0, 2.0, 3.0],
+});
+
+// Decode to JavaScript types
+const result = gen1.decode(data);
+console.log(result.name);  // "Alice"
+```
+
+## Type System
+
+### Creating Values (Gen2)
+
+<CodeGroup>
+```typescript Primitives
+import { gen2 } from 'cowrie-codec';
+const { SJ } = gen2;
+
+// Scalars
+const nullVal = SJ.null();
+const boolVal = SJ.bool(true);
+const intVal = SJ.int64(42);
+const uintVal = SJ.uint64(100);
+const floatVal = SJ.float64(3.14);
+const strVal = SJ.string('hello');
+const bytesVal = SJ.bytes(new Uint8Array([1, 2]));
+```
+
+```typescript Collections
+// Array
+const arr = SJ.array([
+  SJ.int64(1),
+  SJ.int64(2),
+  SJ.int64(3),
+]);
+
+// Object
+const obj = SJ.object([
+  ['x', SJ.int64(10)],
+  ['y', SJ.int64(20)],
+]);
+```
+
+```typescript Extended Types
+// UUID
+const uuid = SJ.uuid128('12345678-1234-5678-1234-567812345678');
+
+// Datetime (Date object or timestamp)
+const dt1 = SJ.datetime64(new Date());
+const dt2 = SJ.datetime64(Date.now());
+
+// BigInt
+const big = SJ.bigint(123456789012345678901234567890n);
+
+// Bytes
+const bytes = SJ.bytes(new Uint8Array([0x01, 0x02, 0x03]));
+```
+</CodeGroup>
+
+### ML Types
+
+```typescript
+import { gen2, DType } from 'cowrie-codec';
+const { SJ } = gen2;
+
+// Tensor
+const tensorData = new Float32Array([1.0, 2.0, 3.0, 4.0]);
+const tensor = SJ.tensor(
+  DType.FLOAT32,
+  [2, 2],  // shape
+  new Uint8Array(tensorData.buffer),
+);
+
+// Image
+const imageData = new Uint8Array([/* JPEG bytes */]);
+const img = SJ.image(
+  'jpeg',
+  1920,  // width
+  1080,  // height
+  imageData,
+);
+
+// Audio
+const audioData = new Uint8Array([/* PCM samples */]);
+const audio = SJ.audio(
+  'pcm_int16',
+  44100,  // sample rate
+  2,      // channels
+  audioData,
+);
+```
+
+### Graph Types
+
+```typescript
+import { gen2 } from 'cowrie-codec';
+const { SJ } = gen2;
+
+// Node
+const node = SJ.node(
+  'person_42',
+  ['Person', 'Employee'],
+  SJ.object([
+    ['name', SJ.string('Alice')],
+    ['age', SJ.int64(30)],
+  ]),
+);
+
+// Edge
+const edge = SJ.edge(
+  'person_42',
+  'company_1',
+  'WORKS_AT',
+  SJ.object([
+    ['since', SJ.int64(2020)],
+  ]),
+);
+
+// Graph Shard
+const shard = SJ.graphShard(
+  [node],
+  [edge],
+  SJ.object([['version', SJ.int64(1)]]),
+);
+```
+
+## Type Guards
+
+```typescript
+import { gen2, Value } from 'cowrie-codec';
+
+function processValue(val: Value) {
+  if (val.type === 'string') {
+    console.log(val.value.toUpperCase());
+  } else if (val.type === 'int64') {
+    console.log(val.value * 2);
+  } else if (val.type === 'array') {
+    val.items.forEach(item => processValue(item));
+  } else if (val.type === 'object') {
+    Object.entries(val.members).forEach(([key, value]) => {
+      console.log(`${key}:`, value);
+    });
+  } else if (val.type === 'tensor') {
+    console.log('Tensor shape:', val.dims);
+  }
+}
+```
+
+## JSON Bridge
+
+<CodeGroup>
+```typescript To JSON
+import { gen2 } from 'cowrie-codec';
+
+const val = gen2.SJ.object([
+  ['name', gen2.SJ.string('Alice')],
+  ['age', gen2.SJ.int64(30)],
+]);
+
+const jsonStr = gen2.toJSON(val);
+console.log(jsonStr);  // {"name":"Alice","age":30}
+```
+
+```typescript From JSON
+import { gen2 } from 'cowrie-codec';
+
+const jsonStr = '{"name":"Alice","age":30}';
+const val = gen2.fromJSON(jsonStr);
+
+// Encode to Cowrie binary
+const data = gen2.encode(val);
+```
+</CodeGroup>
+
+## Automatic Type Conversion
+
+```typescript
+import { gen2 } from 'cowrie-codec';
+
+// JavaScript objects are automatically converted
+const data = gen2.encode({
+  name: 'Alice',
+  age: 30,
+  scores: [98.5, 87.3, 92.1],
+  active: true,
+  metadata: null,
+});
+
+// Use fromAny for explicit conversion
+const val = gen2.fromAny({
+  name: 'Alice',
+  age: 30,
+});
+```
+
+## Browser Usage
+
+### Fetch API
+
+```typescript
+import { gen2 } from 'cowrie-codec';
+
+// Send Cowrie data
+const payload = gen2.encode({
+  action: 'update',
+  data: { id: 123, name: 'Alice' },
+});
+
+const response = await fetch('/api/endpoint', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/x-cowrie',
+  },
+  body: payload,
+});
+
+// Receive Cowrie data
+const responseData = new Uint8Array(await response.arrayBuffer());
+const result = gen2.decode(responseData);
+```
+
+### Web Workers
+
+```typescript
+// worker.ts
+import { gen2 } from 'cowrie-codec';
+
+self.onmessage = (e: MessageEvent<Uint8Array>) => {
+  const data = gen2.decode(e.data);
+  
+  // Process data
+  const result = process(data);
+  
+  // Send back encoded result
+  const encoded = gen2.encode(result);
+  self.postMessage(encoded, [encoded.buffer]);
+};
+
+// main.ts
+const worker = new Worker('worker.ts');
+const data = gen2.encode({ task: 'compute', values: [1, 2, 3] });
+worker.postMessage(data, [data.buffer]);
+```
+
+## Node.js Usage
+
+### File I/O
+
+```typescript
+import { gen2 } from 'cowrie-codec';
+import { readFile, writeFile } from 'fs/promises';
+
+// Write
+const data = gen2.encode({ name: 'Alice', age: 30 });
+await writeFile('data.cowrie', data);
+
+// Read
+const fileData = await readFile('data.cowrie');
+const result = gen2.decode(fileData);
+```
+
+### HTTP Server
+
+```typescript
+import { createServer } from 'http';
+import { gen2 } from 'cowrie-codec';
+
+const server = createServer(async (req, res) => {
+  if (req.method === 'POST') {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
+    const data = Buffer.concat(chunks);
+    
+    // Decode request
+    const payload = gen2.decode(data);
+    
+    // Process and encode response
+    const result = process(payload);
+    const response = gen2.encode(result);
+    
+    res.writeHead(200, { 'Content-Type': 'application/x-cowrie' });
+    res.end(response);
+  }
+});
+
+server.listen(3000);
+```
+
+## Error Handling
+
+```typescript
+import { gen2, SecurityLimitExceeded } from 'cowrie-codec';
+
+try {
+  const result = gen2.decode(data);
+  // Process result
+} catch (error) {
+  if (error instanceof SecurityLimitExceeded) {
+    console.error('Security limit exceeded:', error.message);
+  } else if (error instanceof Error) {
+    console.error('Decode error:', error.message);
+  }
+}
+```
+
+## Security Options
+
+```typescript
+import { gen2, DecodeOptions } from 'cowrie-codec';
+
+const options: DecodeOptions = {
+  maxDepth: 500,
+  maxArrayLen: 1_000_000,
+  maxObjectLen: 100_000,
+  maxStringLen: 10_000_000,
+  maxBytesLen: 100_000_000,
+};
+
+const result = gen2.decode(data, options);
+```
+
+## TypeScript Types
+
+### Value Types
+
+```typescript
+import { Value, Type } from 'cowrie-codec/gen2';
+
+type JsonValue =
+  | null
+  | boolean
+  | number
+  | bigint
+  | string
+  | Uint8Array
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+function processValue(val: Value): void {
+  switch (val.type) {
+    case Type.String:
+      console.log('String:', val.value);
+      break;
+    case Type.Int64:
+      console.log('Int64:', val.value);
+      break;
+    case Type.Array:
+      console.log('Array length:', val.items.length);
+      break;
+    case Type.Object:
+      console.log('Object keys:', Object.keys(val.members));
+      break;
+  }
+}
+```
+
+### Generic Types
+
+```typescript
+import { gen2, Value } from 'cowrie-codec';
+
+interface User {
+  name: string;
+  age: number;
+  email: string;
+}
+
+function encodeUser(user: User): Uint8Array {
+  return gen2.encode(user);
+}
+
+function decodeUser(data: Uint8Array): User {
+  const result = gen2.decode(data);
+  return result as User;  // Type assertion
+}
+```
+
+## Advanced Features
+
+### Custom Encoders
+
+```typescript
+import { gen2 } from 'cowrie-codec';
+
+class CustomData {
+  constructor(
+    public id: number,
+    public name: string,
+  ) {}
+  
+  toCowrie() {
+    return gen2.SJ.object([
+      ['id', gen2.SJ.int64(this.id)],
+      ['name', gen2.SJ.string(this.name)],
+      ['_type', gen2.SJ.string('CustomData')],
+    ]);
+  }
+  
+  static fromCowrie(val: Value): CustomData {
+    if (val.type !== 'object') {
+      throw new Error('Expected object');
+    }
+    return new CustomData(
+      val.members.id.value as number,
+      val.members.name.value as string,
+    );
+  }
+}
+
+const data = new CustomData(123, 'Alice');
+const encoded = gen2.encode(data.toCowrie());
+const decoded = CustomData.fromCowrie(gen2.decode(encoded));
+```
+
+### Batch Operations
+
+```typescript
+import { gen2 } from 'cowrie-codec';
+
+// Encode multiple items
+const items = Array.from({ length: 1000 }, (_, i) => ({
+  id: i,
+  name: `user_${i}`,
+}));
+
+const encoded = items.map(item => gen2.encode(item));
+
+// Decode multiple items
+const decoded = encoded.map(data => gen2.decode(data));
+```
+
+## Performance Tips
+
+1. **Use Gen1 for simple data**: Faster and smaller for JSON-like data
+
+2. **Reuse Uint8Array buffers**: Pre-allocate for better performance
+   ```typescript
+   const buffer = new Uint8Array(1024 * 1024);  // 1MB buffer
+   ```
+
+3. **Transfer ownership in workers**: Use transferable objects
+   ```typescript
+   worker.postMessage(data, [data.buffer]);
+   ```
+
+4. **Batch encode operations**: Process multiple items together
+
+5. **Use TypedArrays**: Faster than regular arrays for numeric data
+
+## Examples
+
+### Complete Example
+
+```typescript
+import { gen2 } from 'cowrie-codec';
+
+interface UserData {
+  user: {
+    name: string;
+    id: number;
+  };
+  scores: number[];
+  embedding: Float32Array;
+  active: boolean;
+}
+
+function main() {
+  // Create data
+  const data: UserData = {
+    user: {
+      name: 'Alice',
+      id: 12345,
+    },
+    scores: [98.5, 87.3, 92.1],
+    embedding: new Float32Array([0.1, 0.2, 0.3]),
+    active: true,
+  };
+  
+  // Encode
+  const encoded = gen2.encode(data);
+  console.log(`Encoded size: ${encoded.length} bytes`);
+  
+  // Decode
+  const decoded = gen2.decode(encoded);
+  
+  // Process
+  if (decoded.type === 'object') {
+    console.log('User:', decoded.members.user);
+    console.log('Scores:', decoded.members.scores);
+  }
+}
+
+main();
+```
+
+### React Integration
+
+```typescript
+import { useState, useEffect } from 'react';
+import { gen2 } from 'cowrie-codec';
+
+function DataComponent() {
+  const [data, setData] = useState(null);
+  
+  useEffect(() => {
+    fetch('/api/data')
+      .then(res => res.arrayBuffer())
+      .then(buffer => gen2.decode(new Uint8Array(buffer)))
+      .then(setData);
+  }, []);
+  
+  return <div>{JSON.stringify(data)}</div>;
+}
+```

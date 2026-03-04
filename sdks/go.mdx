@@ -1,0 +1,376 @@
+---
+title: 'Go SDK'
+description: 'Cowrie binary JSON codec implementation for Go'
+---
+
+# Go SDK
+
+The Go implementation provides both Gen1 and Gen2 (v2) codecs with full type safety and high performance.
+
+## Installation
+
+```bash
+go get github.com/phenomenon0/cowrie-final/go
+```
+
+## Imports
+
+<Tabs>
+  <Tab title="Gen2 (Full)">
+    ```go
+    import (
+        "github.com/phenomenon0/cowrie-final/go"  // Gen2 (default)
+    )
+    ```
+  </Tab>
+  <Tab title="Gen1 (Lightweight)">
+    ```go
+    import (
+        "github.com/phenomenon0/cowrie-final/go/gen1"
+    )
+    ```
+  </Tab>
+</Tabs>
+
+## Basic Usage
+
+### Gen2: Encode & Decode
+
+<CodeGroup>
+```go Encode
+val := cowrie.Object(
+    cowrie.Member{Key: "name", Value: cowrie.String("Alice")},
+    cowrie.Member{Key: "age", Value: cowrie.Int64(30)},
+    cowrie.Member{Key: "score", Value: cowrie.Float64(98.5)},
+)
+
+data, err := cowrie.Encode(val)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+```go Decode
+result, err := cowrie.Decode(data)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Access fields
+if result.Type() == cowrie.TypeObject {
+    members := result.Members()
+    for _, m := range members {
+        fmt.Printf("%s: %v\n", m.Key, m.Value)
+    }
+}
+```
+</CodeGroup>
+
+### Gen1: Lightweight Encoding
+
+```go
+import "github.com/phenomenon0/cowrie-final/go/gen1"
+
+// Encode any Go value
+data, err := gen1.Encode(map[string]any{
+    "name":   "Alice",
+    "scores": []float64{0.1, 0.2, 0.3},
+})
+
+// Decode to any
+result, err := gen1.Decode(data)
+obj := result.(map[string]any)
+```
+
+## Type System
+
+### Creating Values (Gen2)
+
+<CodeGroup>
+```go Primitives
+// Scalars
+nullVal := cowrie.Null()
+boolVal := cowrie.Bool(true)
+intVal := cowrie.Int64(42)
+uintVal := cowrie.Uint64(100)
+floatVal := cowrie.Float64(3.14)
+strVal := cowrie.String("hello")
+bytesVal := cowrie.Bytes([]byte{0x01, 0x02})
+```
+
+```go Collections
+// Array
+arr := cowrie.Array(
+    cowrie.Int64(1),
+    cowrie.Int64(2),
+    cowrie.Int64(3),
+)
+
+// Object
+obj := cowrie.Object(
+    cowrie.Member{Key: "x", Value: cowrie.Int64(10)},
+    cowrie.Member{Key: "y", Value: cowrie.Int64(20)},
+)
+```
+
+```go Extended Types
+// UUID
+uuid := cowrie.UUID128([16]byte{...})
+
+// Datetime (nanoseconds since epoch)
+dt := cowrie.Datetime64(time.Now().UnixNano())
+
+// BigInt (two's complement bytes)
+bigInt := cowrie.BigInt([]byte{0x01, 0x23, 0x45})
+
+// Decimal128
+dec := cowrie.NewDecimal128(2, [16]byte{...}) // scale=2
+```
+</CodeGroup>
+
+### ML Types
+
+```go
+// Tensor
+data := []byte{...}  // raw tensor data
+tensor := cowrie.Tensor(
+    cowrie.DTypeFloat32,
+    []uint64{384},  // shape
+    data,
+)
+
+// Image
+imageData := []byte{...}  // JPEG bytes
+img := cowrie.Image(
+    cowrie.ImageFormatJPEG,
+    1920,  // width
+    1080,  // height
+    imageData,
+)
+
+// Audio
+audioData := []byte{...}  // PCM samples
+aud := cowrie.Audio(
+    cowrie.AudioEncodingPCMInt16,
+    44100,  // sample rate
+    2,      // channels
+    audioData,
+)
+```
+
+### Graph Types
+
+```go
+// Node
+node := cowrie.Node(
+    "person_42",
+    []string{"Person", "Employee"},
+    map[string]any{
+        "name": "Alice",
+        "age":  30,
+    },
+)
+
+// Edge
+edge := cowrie.Edge(
+    "person_42",
+    "company_1",
+    "WORKS_AT",
+    map[string]any{
+        "since": 2020,
+    },
+)
+
+// Graph Shard
+shard := cowrie.GraphShard(
+    []cowrie.NodeData{...},
+    []cowrie.EdgeData{...},
+    map[string]any{"version": 1},
+)
+```
+
+## Reading Values
+
+```go
+val, _ := cowrie.Decode(data)
+
+switch val.Type() {
+case cowrie.TypeString:
+    str := val.String()
+    fmt.Println(str)
+
+case cowrie.TypeInt64:
+    num := val.Int64()
+    fmt.Println(num)
+
+case cowrie.TypeArray:
+    arr := val.Array()
+    for _, item := range arr {
+        // process item
+    }
+
+case cowrie.TypeObject:
+    members := val.Members()
+    for _, m := range members {
+        fmt.Printf("%s: %v\n", m.Key, m.Value)
+    }
+
+case cowrie.TypeTensor:
+    t := val.Tensor()
+    fmt.Printf("DType: %d, Shape: %v\n", t.DType, t.Dims)
+}
+```
+
+## JSON Bridge
+
+<CodeGroup>
+```go To JSON
+// Cowrie -> JSON
+cowrieVal := cowrie.String("test")
+jsonBytes, err := cowrie.ToJSON(cowrieVal)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(string(jsonBytes))  // "test"
+```
+
+```go From JSON
+// JSON -> Cowrie
+jsonBytes := []byte(`{"name":"Alice","age":30}`)
+val, err := cowrie.FromJSON(jsonBytes)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Encode to Cowrie binary
+data, _ := cowrie.Encode(val)
+```
+</CodeGroup>
+
+## Streaming
+
+### Gen1 Stream Decoder
+
+```go
+import "github.com/phenomenon0/cowrie-final/go/gen1"
+
+dec := gen1.NewStreamDecoder(conn)
+for {
+    val, err := dec.Decode()
+    if err == io.EOF {
+        break
+    }
+    if err != nil {
+        return err
+    }
+    process(val)
+}
+```
+
+### Gen2 IO Operations
+
+<CodeGroup>
+```go Encode To Writer
+val := cowrie.String("test")
+err := cowrie.EncodeTo(writer, val)
+```
+
+```go Decode From Reader
+// With size limit (recommended for untrusted input)
+val, err := cowrie.DecodeFromLimited(reader, 10*1024*1024)  // 10MB limit
+
+// Or unlimited (use with caution)
+val, err := cowrie.DecodeFrom(reader)
+```
+</CodeGroup>
+
+## Advanced Features
+
+### Encoding Options
+
+```go
+opts := cowrie.EncodeOptions{
+    Deterministic: true,  // Sort keys for reproducible output
+    OmitNull:      true,  // Exclude null values from objects
+}
+
+val := cowrie.Object(
+    cowrie.Member{Key: "name", Value: cowrie.String("Alice")},
+    cowrie.Member{Key: "meta", Value: cowrie.Null()},
+)
+
+data, err := cowrie.EncodeWithOptions(val, opts)
+// Result will not include "meta" field
+```
+
+### Decoding Options
+
+```go
+opts := cowrie.DecodeOptions{
+    MaxDepth:     500,                // Limit nesting depth
+    MaxArrayLen:  1_000_000,          // Limit array size
+    MaxObjectLen: 100_000,            // Limit object fields
+    MaxStringLen: 10_000_000,         // Limit string length
+    MaxBytesLen:  100_000_000,        // Limit bytes/tensor data
+    OnUnknownExt: cowrie.UnknownExtKeep,  // Preserve unknown extensions
+}
+
+val, err := cowrie.DecodeWithOptions(data, opts)
+```
+
+### Type Conversion
+
+```go
+// Convert Go types to Cowrie values
+val := cowrie.FromAny(map[string]any{
+    "name":  "Alice",
+    "age":   30,
+    "active": true,
+})
+
+// Convert Cowrie values back to Go types
+goVal := cowrie.ToAny(val)
+obj := goVal.(map[string]any)
+```
+
+## Error Handling
+
+```go
+val, err := cowrie.Decode(data)
+if err != nil {
+    switch {
+    case errors.Is(err, cowrie.ErrInvalidMagic):
+        log.Println("Not a valid Cowrie file")
+    case errors.Is(err, cowrie.ErrInvalidVersion):
+        log.Println("Unsupported version")
+    case errors.Is(err, cowrie.ErrDepthExceeded):
+        log.Println("Data too deeply nested")
+    case errors.Is(err, cowrie.ErrArrayTooLarge):
+        log.Println("Array exceeds size limit")
+    default:
+        log.Printf("Decode error: %v", err)
+    }
+}
+```
+
+## Performance Tips
+
+1. **Reuse buffers**: Use `EncodeAppend` to avoid allocations
+   ```go
+   buf := make([]byte, 0, 4096)
+   buf, err = cowrie.EncodeAppend(buf, val1)
+   buf, err = cowrie.EncodeAppend(buf, val2)
+   ```
+
+2. **Streaming for large data**: Use `EncodeTo` and `DecodeFrom` for large payloads
+
+3. **Security limits**: Always use `DecodeFromLimited` for untrusted input
+
+4. **Gen1 for simple data**: Use Gen1 for lightweight JSON-compatible data
+
+## Package Reference
+
+- `github.com/phenomenon0/cowrie-final/go` - Gen2 (Cowrie v2)
+- `github.com/phenomenon0/cowrie-final/go/gen1` - Gen1 (lightweight)
+- `github.com/phenomenon0/cowrie-final/go/graph` - Graph utilities
+- `github.com/phenomenon0/cowrie-final/go/gnn` - GNN helpers

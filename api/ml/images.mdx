@@ -1,0 +1,304 @@
+---
+title: 'Images'
+description: 'Native image encoding in Cowrie without base64 overhead'
+---
+
+## Overview
+
+Cowrie provides native image support through the `Image` type (tag `0x22`). Images are stored as raw compressed bytes (JPEG, PNG, WebP, etc.) without base64 encoding, reducing payload size by 33% compared to JSON.
+
+## Image (TagImage / 0x22)
+
+The `Image` type encodes images with format metadata and raw compressed data.
+
+### Wire Format
+
+```
+Tag(0x22) | format:u8 | width:u16 LE | height:u16 LE | dataLen:varint | data:bytes
+```
+
+- **format** (u8): Image format code (see Formats below)
+- **width** (u16 LE): Image width in pixels (little-endian)
+- **height** (u16 LE): Image height in pixels (little-endian)
+- **dataLen** (varint): Length of image data in bytes
+- **data** (bytes): Raw compressed image data (JPEG, PNG, etc.)
+
+### Image Formats
+
+| Code | Format | Description | Use Case |
+|------|--------|-------------|----------|
+| `0x01` | JPEG | Lossy compression | Photos, natural images |
+| `0x02` | PNG | Lossless compression | Screenshots, diagrams |
+| `0x03` | WebP | Modern lossy/lossless | Web-optimized images |
+| `0x04` | AVIF | Next-gen compression | High efficiency |
+| `0x05` | BMP | Uncompressed bitmap | Raw pixel data |
+
+## Construction
+
+### TypeScript
+
+```typescript
+import { SJ, ImageFormat, encode, decode } from 'cowrie';
+import * as fs from 'fs';
+
+// Load JPEG from file
+const jpegData = fs.readFileSync('photo.jpg');
+
+// Create Image value
+const image = SJ.image(
+  ImageFormat.JPEG,
+  1920,  // width
+  1080,  // height
+  new Uint8Array(jpegData)
+);
+
+// Encode
+const encoded = encode(image);
+
+// Decode
+const decoded = decode(encoded);
+const imgData = decoded.data as ImageData;
+console.log(imgData.format);   // ImageFormat.JPEG
+console.log(imgData.width);    // 1920
+console.log(imgData.height);   // 1080
+console.log(imgData.data);     // Uint8Array with JPEG bytes
+```
+
+### Python
+
+```python
+from cowrie import encode, decode
+
+# Load image
+with open('photo.jpg', 'rb') as f:
+    jpeg_data = f.read()
+
+# Create image value
+image = {
+    "type": "image",
+    "format": "jpeg",
+    "width": 1920,
+    "height": 1080,
+    "data": jpeg_data
+}
+
+# Encode
+encoded = encode(image)
+
+# Decode
+decoded = decode(encoded)
+print(decoded["width"], decoded["height"])
+```
+
+### Go
+
+```go
+import (
+    "os"
+    "github.com/cowrie/cowrie-go/gen2"
+)
+
+// Load JPEG
+jpegData, _ := os.ReadFile("photo.jpg")
+
+// Create Image value
+image := gen2.Image(gen2.ImageFormatJPEG, 1920, 1080, jpegData)
+
+// Encode
+encoded := gen2.Encode(image)
+
+// Decode
+decoded := gen2.Decode(encoded)
+```
+
+## Data Layout
+
+The image data field contains the **raw compressed image bytes** exactly as produced by the encoder (JPEG, PNG, WebP, etc.). No additional encoding or transformation is applied.
+
+For example:
+- **JPEG**: Contains standard JFIF/EXIF JPEG data starting with `0xFF 0xD8`
+- **PNG**: Contains PNG signature and chunks starting with `0x89 0x50 0x4E 0x47`
+- **WebP**: Contains RIFF container with WebP data
+
+This allows decoders to pass the data directly to image decoding libraries without preprocessing.
+
+## Use Cases
+
+### Vision Models
+
+```typescript
+// Vision model input batch
+const batch = SJ.array([
+  SJ.image(ImageFormat.JPEG, 224, 224, img1Data),
+  SJ.image(ImageFormat.JPEG, 224, 224, img2Data),
+  SJ.image(ImageFormat.JPEG, 224, 224, img3Data),
+]);
+
+const request = SJ.object({
+  "model": SJ.str("vision-v1"),
+  "images": batch,
+  "prompt": SJ.str("Describe these images")
+});
+```
+
+### Image Generation Results
+
+```typescript
+// Stable Diffusion output
+const result = SJ.object({
+  "prompt": SJ.str("A cat wearing a hat"),
+  "model": SJ.str("stable-diffusion-xl"),
+  "images": SJ.array([
+    SJ.image(ImageFormat.PNG, 1024, 1024, generatedImage1),
+    SJ.image(ImageFormat.PNG, 1024, 1024, generatedImage2),
+  ]),
+  "seed": SJ.int(42),
+  "steps": SJ.int(50)
+});
+```
+
+### Multimodal Chat
+
+```typescript
+// User message with images
+const message = SJ.object({
+  "role": SJ.str("user"),
+  "content": SJ.str("What's in this image?"),
+  "images": SJ.array([
+    SJ.image(ImageFormat.JPEG, 800, 600, userImage)
+  ]),
+  "timestamp": SJ.datetime(new Date())
+});
+```
+
+### Document Processing
+
+```typescript
+// OCR input
+const document = SJ.object({
+  "doc_id": SJ.str("invoice_123"),
+  "pages": SJ.array([
+    SJ.image(ImageFormat.PNG, 2480, 3508, page1),  // A4 @ 300dpi
+    SJ.image(ImageFormat.PNG, 2480, 3508, page2),
+  ]),
+  "language": SJ.str("en")
+});
+```
+
+## Format Selection Guide
+
+### JPEG
+- **Best for**: Natural photos, screenshots with gradients
+- **Pros**: Wide compatibility, small size for photos
+- **Cons**: Lossy compression, artifacts on text/edges
+- **Typical compression**: 10:1 to 20:1
+
+### PNG
+- **Best for**: Screenshots, diagrams, images with text
+- **Pros**: Lossless, transparency support
+- **Cons**: Larger than JPEG for photos
+- **Typical compression**: 2:1 to 5:1 (lossless)
+
+### WebP
+- **Best for**: Web applications, modern clients
+- **Pros**: Better compression than JPEG/PNG, supports lossy and lossless
+- **Cons**: Not universally supported in older systems
+- **Typical compression**: 25-35% smaller than JPEG
+
+### AVIF
+- **Best for**: Cutting-edge applications with high efficiency needs
+- **Pros**: Best compression efficiency (40-50% better than JPEG)
+- **Cons**: Limited support, slower encode/decode
+- **Typical compression**: 50% smaller than JPEG
+
+### BMP
+- **Best for**: Debugging, raw pixel data, legacy systems
+- **Pros**: No compression overhead, simple format
+- **Cons**: Very large files
+- **Typical size**: width × height × 3-4 bytes
+
+## Performance Comparison
+
+For a 1920×1080 photo:
+
+| Format | JSON + base64 | Cowrie | Savings |
+|--------|---------------|--------|---------|
+| JPEG (200KB) | 267 KB | 200 KB | 25% |
+| PNG (1.2MB) | 1.6 MB | 1.2 MB | 25% |
+| WebP (150KB) | 200 KB | 150 KB | 25% |
+
+Cowrie eliminates base64 overhead (33% inflation) while preserving all metadata.
+
+## Security Limits
+
+| Limit | Default | Description |
+|-------|---------|-------------|
+| MaxBytesLen | 1GB | Maximum image data size |
+
+Decoders should also validate:
+- Width and height are reasonable (e.g., ≤ 65535 pixels)
+- Data length matches expected size for format
+- Image data is valid (passes format validation)
+
+## Dimension Limits
+
+Width and height are encoded as **u16 LE** (16-bit unsigned, little-endian), providing a range of **0-65535 pixels**. This supports:
+- 4K: 3840 × 2160 ✓
+- 8K: 7680 × 4320 ✓
+- A4 @ 600dpi: 4961 × 7016 ✗ (exceeds 65535)
+
+For larger images, consider:
+1. Tiling the image into smaller chunks
+2. Using TensorRef to reference external storage
+3. Downsampling for transmission
+
+## Working with Image Data
+
+### Browser (TypeScript)
+
+```typescript
+// Decode and display in browser
+const imgData = decoded.data as ImageData;
+const blob = new Blob([imgData.data], { type: 'image/jpeg' });
+const url = URL.createObjectURL(blob);
+
+const img = document.createElement('img');
+img.src = url;
+document.body.appendChild(img);
+```
+
+### Node.js (TypeScript)
+
+```typescript
+import sharp from 'sharp';
+
+// Process with sharp
+const imgData = decoded.data as ImageData;
+const processed = await sharp(Buffer.from(imgData.data))
+  .resize(512, 512)
+  .toBuffer();
+
+// Re-encode
+const resized = SJ.image(ImageFormat.PNG, 512, 512, processed);
+```
+
+### Python
+
+```python
+from PIL import Image
+import io
+
+# Decode and open with PIL
+img_data = decoded["data"]
+img = Image.open(io.BytesIO(img_data))
+img.show()
+
+# Process
+resized = img.resize((512, 512))
+```
+
+## See Also
+
+- [Tensors](/api/ml/tensors) - Multi-dimensional arrays for ML
+- [Audio](/api/ml/audio) - Audio encoding formats
+- [Wire Format Spec](/concepts/wire-format) - Full protocol details

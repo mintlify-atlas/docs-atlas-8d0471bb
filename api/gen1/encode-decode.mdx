@@ -1,0 +1,345 @@
+---
+title: "Encode & Decode"
+description: "Core encoding and decoding functions for Gen1 Cowrie format"
+---
+
+## Overview
+
+Gen1 provides simple, high-performance functions for encoding Go data to binary format and decoding back to Go values. All functions are safe for concurrent use.
+
+## Encode
+
+Encodes arbitrary Go data into Gen1 Cowrie binary format.
+
+```go
+func Encode(v any) ([]byte, error)
+```
+
+<ParamField path="v" type="any" required>
+  The value to encode. Supports all JSON-compatible types plus typed arrays (`[]int64`, `[]float64`, `[]float32`, `[]string`) and graph types.
+</ParamField>
+
+<ResponseField name="[]byte">
+  Binary-encoded data in Gen1 Cowrie format
+</ResponseField>
+
+<ResponseField name="error">
+  Error if encoding fails (e.g., unsupported type)
+</ResponseField>
+
+### Example
+
+```go
+data, err := gen1.Encode(map[string]any{
+    "embedding": []float64{0.1, 0.2, 0.3, 0.4},
+    "id": "doc-123",
+    "count": int64(42),
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Supported Types
+
+| Go Type | Gen1 Tag | Notes |
+|---------|----------|-------|
+| `nil` | 0x00 | Null value |
+| `bool` | 0x01, 0x02 | False = 0x01, True = 0x02 |
+| `int`, `int8`-`int64`, `uint`, `uint8`-`uint64` | 0x03 | All encode as varint |
+| `float32`, `float64` | 0x04 | Scalar floats |
+| `string` | 0x05 | UTF-8 strings |
+| `[]byte` | 0x06 | Binary data |
+| `[]any` | 0x07 | Heterogeneous arrays |
+| `map[string]any` | 0x08 | Objects (sorted keys) |
+| `[]int64` | 0x09 | Homogeneous int64 arrays (8 bytes/element) |
+| `[]float64` | 0x0A or 0x0C | Proto-tensor (precision controlled by options) |
+| `[]float32` | 0x0C | Float32 arrays (4 bytes/element) |
+| `[]string` | 0x0B | Homogeneous string arrays |
+
+## EncodeWithOptions
+
+Encodes with explicit control over precision and behavior.
+
+```go
+func EncodeWithOptions(v any, opts EncodeOptions) ([]byte, error)
+```
+
+<ParamField path="v" type="any" required>
+  The value to encode
+</ParamField>
+
+<ParamField path="opts" type="EncodeOptions" required>
+  Encoding options controlling precision and behavior
+</ParamField>
+
+<ParamField path="opts.HighPrecision" type="bool">
+  When `true` (default), preserves float64 precision (8 bytes/float, tag 0x0A).
+  When `false`, uses float32 for ~50% size reduction (4 bytes/float, tag 0x0C).
+  
+  **Use HighPrecision: true for:**
+  - Cross-language compatibility (recommended default)
+  - Financial data requiring exact decimal representation
+  - Scientific constants with many significant digits
+  - Cryptographic values where bit-exactness matters
+  
+  **Use HighPrecision: false for:**
+  - ML embeddings and features
+  - Sensor data and measurements
+  - Graphics and game data
+  - Go-only workloads prioritizing size
+</ParamField>
+
+### Example
+
+```go
+// Default: HighPrecision = true (cross-language safe)
+data, _ := gen1.Encode([]float64{1.1, 2.2, 3.3, 4.4})
+// Uses tag 0x0A (Float64Array): 8 bytes per float
+
+// Optimize for size in Go-only pipelines
+data, _ := gen1.EncodeWithOptions(
+    []float64{1.1, 2.2, 3.3, 4.4},
+    gen1.EncodeOptions{HighPrecision: false},
+)
+// Uses tag 0x0C (Float32Array): 4 bytes per float (~50% smaller)
+```
+
+## Decode
+
+Decodes Gen1 Cowrie binary data back into a Go value.
+
+```go
+func Decode(data []byte) (any, error)
+```
+
+<ParamField path="data" type="[]byte" required>
+  Binary data in Gen1 Cowrie format
+</ParamField>
+
+<ResponseField name="any">
+  Decoded Go value. Types:
+  - Primitives: `nil`, `bool`, `int64`, `float64`, `string`, `[]byte`
+  - Containers: `map[string]any`, `[]any`
+  - Typed arrays: `[]int64`, `[]float64`, `[]string`
+  - Graph types: `Node`, `Edge`, `AdjList`, `NodeBatch`, `EdgeBatch`, `GraphShard`
+</ResponseField>
+
+<ResponseField name="error">
+  Error if data is malformed or exceeds security limits
+</ResponseField>
+
+### Example
+
+```go
+result, err := gen1.Decode(data)
+if err != nil {
+    log.Fatal(err)
+}
+
+obj := result.(map[string]any)
+embedding := obj["embedding"].([]float64)
+```
+
+## DecodeWithOptions
+
+Decodes with custom security limits to protect against malicious input.
+
+```go
+func DecodeWithOptions(data []byte, opts DecodeOptions) (any, error)
+```
+
+<ParamField path="data" type="[]byte" required>
+  Binary data to decode
+</ParamField>
+
+<ParamField path="opts" type="DecodeOptions" required>
+  Security limits for decoding
+</ParamField>
+
+<ParamField path="opts.MaxDepth" type="int">
+  Maximum nesting depth for objects/arrays (default: 1000). Prevents stack overflow from deeply nested structures.
+</ParamField>
+
+<ParamField path="opts.MaxArrayLen" type="int64">
+  Maximum array element count (default: 100,000,000). Prevents memory exhaustion from malicious array size declarations.
+</ParamField>
+
+<ParamField path="opts.MaxObjectLen" type="int64">
+  Maximum object field count (default: 10,000,000)
+</ParamField>
+
+<ParamField path="opts.MaxStringLen" type="int64">
+  Maximum string byte length (default: 500,000,000)
+</ParamField>
+
+<ParamField path="opts.MaxBytesLen" type="int64">
+  Maximum bytes length (default: 1,000,000,000)
+</ParamField>
+
+### Security Errors
+
+```go
+var (
+    ErrMaxDepthExceeded  = errors.New("cowrie: maximum nesting depth exceeded")
+    ErrMaxArrayLen       = errors.New("cowrie: array too large")
+    ErrMaxObjectLen      = errors.New("cowrie: object has too many fields")
+    ErrMaxStringLen      = errors.New("cowrie: string too long")
+    ErrMaxBytesLen       = errors.New("cowrie: bytes too long")
+    ErrIntegerOverflow   = errors.New("cowrie: integer overflow in size calculation")
+)
+```
+
+### Example
+
+```go
+// Strict limits for untrusted input
+opts := gen1.DecodeOptions{
+    MaxDepth:     100,
+    MaxArrayLen:  10000,
+    MaxObjectLen: 1000,
+    MaxStringLen: 1000000,
+    MaxBytesLen:  10000000,
+}
+
+result, err := gen1.DecodeWithOptions(untrustedData, opts)
+if err == gen1.ErrMaxDepthExceeded {
+    log.Println("Malicious deeply-nested structure detected")
+    return
+}
+```
+
+## JSON Conversion
+
+### EncodeJSON
+
+Converts raw JSON bytes to Gen1 Cowrie format.
+
+```go
+func EncodeJSON(raw []byte) ([]byte, error)
+```
+
+<ParamField path="raw" type="[]byte" required>
+  JSON-encoded data
+</ParamField>
+
+<ResponseField name="[]byte">
+  Gen1 Cowrie binary data
+</ResponseField>
+
+### DecodeJSON
+
+Converts Gen1 Cowrie data back to JSON bytes.
+
+```go
+func DecodeJSON(data []byte) ([]byte, error)
+```
+
+<ParamField path="data" type="[]byte" required>
+  Gen1 Cowrie binary data
+</ParamField>
+
+<ResponseField name="[]byte">
+  JSON-encoded bytes
+</ResponseField>
+
+### Example
+
+```go
+// JSON -> Cowrie
+jsonData := []byte(`{"embedding":[0.1,0.2,0.3,0.4]}`)
+cowrieData, _ := gen1.EncodeJSON(jsonData)
+
+// Cowrie -> JSON
+jsonData2, _ := gen1.DecodeJSON(cowrieData)
+```
+
+## Advanced Functions
+
+### EncodeAppend
+
+Appends encoded data to an existing buffer, avoiding allocations.
+
+```go
+func EncodeAppend(buf []byte, v any) ([]byte, error)
+```
+
+<ParamField path="buf" type="[]byte" required>
+  Existing buffer to append to
+</ParamField>
+
+<ParamField path="v" type="any" required>
+  Value to encode
+</ParamField>
+
+<ResponseField name="[]byte">
+  Buffer with encoded data appended
+</ResponseField>
+
+### Example
+
+```go
+buf := make([]byte, 0, 1024)
+buf = append(buf, magicHeader...)
+buf, _ = gen1.EncodeAppend(buf, record1)
+buf, _ = gen1.EncodeAppend(buf, record2)
+```
+
+### EncodeTo
+
+Writes encoded data directly to an `io.Writer`.
+
+```go
+func EncodeTo(w io.Writer, v any) error
+```
+
+<ParamField path="w" type="io.Writer" required>
+  Writer to output encoded data
+</ParamField>
+
+<ParamField path="v" type="any" required>
+  Value to encode
+</ParamField>
+
+<ResponseField name="error">
+  Error if encoding or writing fails
+</ResponseField>
+
+### Example
+
+```go
+f, _ := os.Create("data.cowrie")
+defer f.Close()
+
+for _, record := range records {
+    if err := gen1.EncodeTo(f, record); err != nil {
+        return err
+    }
+}
+```
+
+## Proto-Tensor Optimization
+
+Gen1 automatically promotes homogeneous numeric arrays (≥4 elements) to efficient binary encoding:
+
+```go
+// Automatic promotion
+input := []any{0.1, 0.2, 0.3, 0.4} // []any with all floats
+data, _ := gen1.Encode(input)
+// Encoded as Float64Array (tag 0x0A) - compact binary
+
+// Explicit typed arrays (recommended for best performance)
+input := []float64{0.1, 0.2, 0.3, 0.4}
+data, _ := gen1.Encode(input)
+// Also uses Float64Array encoding
+```
+
+### Threshold
+
+Arrays with fewer than 4 elements use generic encoding:
+
+```go
+const NumericArrayMin = 4
+```
+
+This threshold balances encoding overhead with compression benefits.

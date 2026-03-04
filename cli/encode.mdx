@@ -1,0 +1,229 @@
+---
+title: Encode Command
+description: Convert JSON to Cowrie binary format with optional compression
+---
+
+## Overview
+
+The `encode` command reads JSON from stdin and writes Cowrie binary format to stdout. It supports both Gen1 and Gen2 codecs with optional compression for Gen2.
+
+## Syntax
+
+```bash
+cowrie encode [--gen1|--gen2] [--compress=none|gzip|zstd] < input.json > output.cowrie
+```
+
+## Flags
+
+### `--gen1`
+Use the Gen1 codec (lightweight, stdlib only).
+
+```bash
+echo '{"name":"Bob"}' | cowrie encode --gen1 > data.cowrie
+```
+
+### `--gen2`
+Use the Gen2 codec with full Cowrie v2 features. This is the **default** codec.
+
+```bash
+echo '{"name":"Bob"}' | cowrie encode --gen2 > data.cowrie
+```
+
+### `--compress=<type>`
+Apply compression to the output (Gen2 only). Available options:
+
+- `none` - No compression (default)
+- `gzip` - Standard gzip compression
+- `zstd` - Zstandard compression (better ratio, faster)
+
+```bash
+cat large.json | cowrie encode --compress=zstd > data.cowrie.zst
+```
+
+## Examples
+
+### Basic Encoding
+
+Encode a simple JSON object:
+```bash
+echo '{"name":"Alice","age":30}' | cowrie encode > person.cowrie
+```
+
+### From File
+
+Encode a JSON file:
+```bash
+cowrie encode < input.json > output.cowrie
+```
+
+Or using cat:
+```bash
+cat users.json | cowrie encode > users.cowrie
+```
+
+### With Compression
+
+Encode large datasets with zstd compression:
+```bash
+cat large-dataset.json | cowrie encode --compress=zstd > dataset.cowrie.zst
+```
+
+Using gzip compression:
+```bash
+cowrie encode --compress=gzip < logs.json > logs.cowrie.gz
+```
+
+### Gen1 vs Gen2
+
+Use Gen1 for lightweight deployment:
+```bash
+echo '{"simple":true}' | cowrie encode --gen1 > simple.cowrie
+```
+
+Use Gen2 (default) for full features:
+```bash
+echo '{"advanced":{"ml":true}}' | cowrie encode --gen2 > advanced.cowrie
+```
+
+### Complex Data
+
+Encode nested JSON structures:
+```bash
+cat << 'EOF' | cowrie encode --gen2 > complex.cowrie
+{
+  "users": [
+    {"id": 1, "name": "Alice", "roles": ["admin", "user"]},
+    {"id": 2, "name": "Bob", "roles": ["user"]}
+  ],
+  "metadata": {
+    "version": "1.0",
+    "timestamp": "2026-03-04T12:00:00Z"
+  }
+}
+EOF
+```
+
+### Batch Processing
+
+Encode multiple files:
+```bash
+for file in *.json; do
+  cowrie encode --compress=zstd < "$file" > "${file%.json}.cowrie"
+done
+```
+
+## Real-World Use Cases
+
+### API Response Caching
+
+Compress API responses for efficient storage:
+```bash
+curl https://api.example.com/data | cowrie encode --compress=zstd > cache/response.cowrie
+```
+
+### Log Archival
+
+Archive JSON logs with maximum compression:
+```bash
+cat application.log.json | cowrie encode --compress=zstd > archive/app-2026-03-04.cowrie
+```
+
+### Data Pipeline
+
+Use in ETL pipelines:
+```bash
+# Extract and transform
+./extract-data.sh | jq '.records' | \
+  cowrie encode --compress=gzip > processed/batch-001.cowrie
+```
+
+### Configuration Distribution
+
+Distribute config files in binary format:
+```bash
+cat config.json | cowrie encode > /etc/app/config.cowrie
+```
+
+## Output
+
+The encode command writes binary data to stdout. Key characteristics:
+
+- **Gen2 format** starts with magic bytes `SJ` (0x53 0x4A)
+- **Gen1 format** starts with a type tag (0x00-0x15)
+- Binary output should be redirected to a file or piped to another command
+- Do not display binary output directly in terminal
+
+## Error Handling
+
+Common errors and solutions:
+
+### Invalid JSON
+```bash
+$ echo '{invalid}' | cowrie encode
+Error parsing JSON: invalid character 'i' looking for beginning of object key string
+```
+
+**Solution:** Validate JSON before encoding:
+```bash
+echo '{"valid": true}' | cowrie encode > output.cowrie
+```
+
+### Compression Not Supported (Gen1)
+```bash
+$ echo '{}' | cowrie encode --gen1 --compress=zstd
+# Compression flag ignored for Gen1
+```
+
+**Solution:** Use Gen2 for compression features:
+```bash
+echo '{}' | cowrie encode --gen2 --compress=zstd > output.cowrie
+```
+
+### Empty Input
+```bash
+$ echo '' | cowrie encode
+Error parsing JSON: unexpected end of JSON input
+```
+
+**Solution:** Ensure valid JSON input:
+```bash
+echo '{}' | cowrie encode > empty.cowrie
+```
+
+## Performance Tips
+
+1. **Use zstd for large files** - Better compression ratio and speed than gzip
+2. **Skip compression for small files** - Overhead may exceed benefits
+3. **Pipe directly** - Avoid intermediate files when possible
+4. **Use Gen1 for simple data** - Lower overhead for basic JSON
+
+## Size Comparison
+
+Example compression ratios for a 10MB JSON file:
+
+```bash
+# Original JSON
+$ ls -lh data.json
+-rw-r--r--  1 user  staff   10M Mar  4 12:00 data.json
+
+# No compression
+$ cowrie encode < data.json > data.cowrie
+$ ls -lh data.cowrie
+-rw-r--r--  1 user  staff   7.2M Mar  4 12:01 data.cowrie
+
+# With gzip
+$ cowrie encode --compress=gzip < data.json > data.cowrie.gz
+$ ls -lh data.cowrie.gz
+-rw-r--r--  1 user  staff   2.1M Mar  4 12:02 data.cowrie.gz
+
+# With zstd
+$ cowrie encode --compress=zstd < data.json > data.cowrie.zst
+$ ls -lh data.cowrie.zst
+-rw-r--r--  1 user  staff   1.8M Mar  4 12:03 data.cowrie.zst
+```
+
+## See Also
+
+- [Decode Command](/cli/decode) - Convert Cowrie back to JSON
+- [Info Command](/cli/info) - Inspect Cowrie file metadata
+- [CLI Overview](/cli/overview) - General CLI usage

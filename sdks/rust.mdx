@@ -1,0 +1,414 @@
+---
+title: 'Rust SDK'
+description: 'Cowrie binary JSON codec implementation for Rust'
+---
+
+# Rust SDK
+
+The Rust implementation provides zero-copy deserialization, strong type safety, and excellent performance.
+
+## Installation
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+cowrie-codec = { path = "path/to/rust" }
+# Or from git:
+# cowrie-codec = { git = "https://github.com/phenomenon0/cowrie-final", branch = "main" }
+```
+
+## Imports
+
+<Tabs>
+  <Tab title="Gen2 (Full)">
+    ```rust
+    use cowrie_codec::gen2::{Value, encode, decode};
+    ```
+  </Tab>
+  <Tab title="Gen1 (Lightweight)">
+    ```rust
+    use cowrie_codec::gen1::{Value, encode, decode};
+    ```
+  </Tab>
+</Tabs>
+
+## Basic Usage
+
+### Gen2: Encode & Decode
+
+<CodeGroup>
+```rust Encode
+use cowrie_codec::gen2::{Value, encode};
+
+let val = Value::object(vec![
+    ("name", Value::String("Alice".into())),
+    ("age", Value::Int64(30)),
+    ("score", Value::Float64(98.5)),
+]);
+
+let data = encode(&val)?;
+```
+
+```rust Decode
+use cowrie_codec::gen2::decode;
+
+let result = decode(&data)?;
+
+match result {
+    Value::Object(members) => {
+        for (key, value) in members {
+            println!("{}: {:?}", key, value);
+        }
+    }
+    _ => {}
+}
+```
+</CodeGroup>
+
+### Gen1: Lightweight Encoding
+
+```rust
+use cowrie_codec::gen1::{Value, encode, decode};
+
+let val = Value::Object(vec![
+    ("name".to_string(), Value::String("Alice".to_string())),
+    ("scores".to_string(), Value::Float64Array(vec![1.0, 2.0, 3.0])),
+]);
+
+let encoded = encode(&val)?;
+let decoded = decode(&encoded)?;
+```
+
+## Type System
+
+### Creating Values (Gen2)
+
+<CodeGroup>
+```rust Primitives
+// Scalars
+let null_val = Value::Null;
+let bool_val = Value::Bool(true);
+let int_val = Value::Int64(42);
+let uint_val = Value::Uint64(100);
+let float_val = Value::Float64(3.14);
+let str_val = Value::String("hello".into());
+let bytes_val = Value::Bytes(vec![0x01, 0x02]);
+```
+
+```rust Collections
+// Array
+let arr = Value::Array(vec![
+    Value::Int64(1),
+    Value::Int64(2),
+    Value::Int64(3),
+]);
+
+// Object
+let obj = Value::object(vec![
+    ("x", Value::Int64(10)),
+    ("y", Value::Int64(20)),
+]);
+```
+
+```rust Extended Types
+// UUID (16 bytes)
+let uuid = Value::UUID128([0u8; 16]);
+
+// Datetime (nanoseconds since epoch)
+let dt = Value::Datetime64(1234567890123456789);
+
+// BigInt (two's complement bytes)
+let big = Value::BigInt(vec![0x01, 0x23, 0x45]);
+
+// Decimal128
+let dec = Value::Decimal128 {
+    scale: 2,
+    coef: [0u8; 16],
+};
+```
+</CodeGroup>
+
+### ML Types
+
+```rust
+// Tensor
+let tensor = Value::Tensor {
+    dtype: DType::Float32,
+    dims: vec![384],
+    data: vec![...],  // raw tensor bytes
+};
+
+// Image
+let img = Value::Image {
+    format: ImageFormat::JPEG,
+    width: 1920,
+    height: 1080,
+    data: image_bytes,
+};
+
+// Audio
+let aud = Value::Audio {
+    encoding: AudioEncoding::PCMInt16,
+    sample_rate: 44100,
+    channels: 2,
+    data: audio_bytes,
+};
+```
+
+### Graph Types
+
+```rust
+use std::collections::HashMap;
+
+// Node
+let mut props = HashMap::new();
+props.insert("name".to_string(), Value::String("Alice".into()));
+props.insert("age".to_string(), Value::Int64(30));
+
+let node = Value::Node {
+    id: "person_42".to_string(),
+    labels: vec!["Person".to_string(), "Employee".to_string()],
+    properties: props,
+};
+
+// Edge
+let mut edge_props = HashMap::new();
+edge_props.insert("since".to_string(), Value::Int64(2020));
+
+let edge = Value::Edge {
+    src: "person_42".to_string(),
+    dst: "company_1".to_string(),
+    label: "WORKS_AT".to_string(),
+    properties: edge_props,
+};
+```
+
+## Pattern Matching
+
+```rust
+use cowrie_codec::gen2::Value;
+
+match value {
+    Value::Null => println!("null"),
+    Value::Bool(b) => println!("bool: {}", b),
+    Value::Int64(n) => println!("int64: {}", n),
+    Value::String(s) => println!("string: {}", s),
+    
+    Value::Array(items) => {
+        for item in items {
+            // process item
+        }
+    }
+    
+    Value::Object(members) => {
+        for (key, val) in members {
+            println!("{} = {:?}", key, val);
+        }
+    }
+    
+    Value::Tensor { dtype, dims, data } => {
+        println!("Tensor<{:?}> shape={:?}", dtype, dims);
+    }
+    
+    _ => println!("Other type"),
+}
+```
+
+## Error Handling
+
+```rust
+use cowrie_codec::gen2::{decode, Gen2Error};
+
+match decode(&data) {
+    Ok(val) => {
+        // Process value
+    }
+    Err(e) => match e {
+        Gen2Error::InvalidMagic => eprintln!("Not a valid Cowrie file"),
+        Gen2Error::InvalidVersion => eprintln!("Unsupported version"),
+        Gen2Error::UnexpectedEof => eprintln!("Truncated data"),
+        Gen2Error::MaxDepthExceeded => eprintln!("Too deeply nested"),
+        Gen2Error::MaxArrayLen => eprintln!("Array too large"),
+        _ => eprintln!("Decode error: {:?}", e),
+    }
+}
+```
+
+## Streaming
+
+### Read from Reader
+
+```rust
+use std::io::Read;
+use cowrie_codec::gen2::decode_from;
+
+let mut file = std::fs::File::open("data.cowrie")?;
+let value = decode_from(&mut file)?;
+```
+
+### Write to Writer
+
+```rust
+use std::io::Write;
+use cowrie_codec::gen2::{encode, Value};
+
+let val = Value::String("test".into());
+let data = encode(&val)?;
+
+let mut file = std::fs::File::create("output.cowrie")?;
+file.write_all(&data)?;
+```
+
+## JSON Bridge
+
+<CodeGroup>
+```rust To JSON
+use cowrie_codec::gen2::{Value, to_json};
+
+let val = Value::object(vec![
+    ("name", Value::String("Alice".into())),
+    ("age", Value::Int64(30)),
+]);
+
+let json_str = to_json(&val)?;
+println!("{}", json_str);
+```
+
+```rust From JSON
+use cowrie_codec::gen2::{from_json, encode};
+
+let json = r#"{"name":"Alice","age":30}"#;
+let val = from_json(json)?;
+
+// Encode to Cowrie binary
+let data = encode(&val)?;
+```
+</CodeGroup>
+
+## Serde Integration
+
+The Rust implementation can integrate with serde for custom types:
+
+```rust
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize)]
+struct Person {
+    name: String,
+    age: u32,
+    email: String,
+}
+
+// Serialize via JSON bridge
+let person = Person {
+    name: "Alice".to_string(),
+    age: 30,
+    email: "alice@example.com".to_string(),
+};
+
+let json = serde_json::to_string(&person)?;
+let val = cowrie_codec::gen2::from_json(&json)?;
+let data = cowrie_codec::gen2::encode(&val)?;
+```
+
+## Security Options
+
+```rust
+use cowrie_codec::gen2::{DecodeOptions, decode_with_options};
+
+let opts = DecodeOptions {
+    max_depth: 500,
+    max_array_len: 1_000_000,
+    max_object_len: 100_000,
+    max_string_len: 10_000_000,
+    max_bytes_len: 100_000_000,
+    ..Default::default()
+};
+
+let val = decode_with_options(&data, opts)?;
+```
+
+## Zero-Copy Optimization
+
+For performance-critical code, use borrowed types:
+
+```rust
+// Using &[u8] instead of Vec<u8>
+let tensor = Value::Tensor {
+    dtype: DType::Float32,
+    dims: vec![100, 100],
+    data: tensor_data.to_vec(),  // or use Cow<'a, [u8]> for zero-copy
+};
+
+// String references (when possible)
+let str_val = Value::String("static string".into());
+```
+
+## Performance Tips
+
+1. **Pre-allocate buffers**: Reserve capacity for large values
+   ```rust
+   let mut items = Vec::with_capacity(1000);
+   ```
+
+2. **Reuse allocations**: Clone values sparingly
+
+3. **Use Gen1 for simple data**: Simpler, faster for JSON-like data
+
+4. **Benchmark your use case**: Use `cargo bench` with your actual data
+
+## Feature Flags
+
+Optional features can be enabled in `Cargo.toml`:
+
+```toml
+[dependencies]
+cowrie-codec = { path = "...", features = ["compression", "numpy"] }
+```
+
+Available features:
+- `compression` - Enable gzip/zstd compression
+- `numpy` - NumPy integration (requires Python)
+- `simd` - SIMD-accelerated encoding (requires nightly)
+
+## Examples
+
+### Complete Example
+
+```rust
+use cowrie_codec::gen2::{Value, encode, decode};
+use std::error::Error;
+
+fn main() -> Result<(), Box<dyn Error>> {
+    // Create a complex value
+    let val = Value::object(vec![
+        ("user", Value::object(vec![
+            ("name", Value::String("Alice".into())),
+            ("id", Value::Int64(12345)),
+        ])),
+        ("scores", Value::Array(vec![
+            Value::Float64(98.5),
+            Value::Float64(87.3),
+            Value::Float64(92.1),
+        ])),
+        ("active", Value::Bool(true)),
+    ]);
+    
+    // Encode
+    let data = encode(&val)?;
+    println!("Encoded size: {} bytes", data.len());
+    
+    // Decode
+    let decoded = decode(&data)?;
+    
+    // Process
+    if let Value::Object(members) = decoded {
+        for (key, value) in members {
+            println!("{}: {:?}", key, value);
+        }
+    }
+    
+    Ok(())
+}
+```

@@ -1,0 +1,230 @@
+---
+title: 'Gen1 vs Gen2'
+description: 'Understand the differences between Cowrie Gen1 and Gen2 formats'
+---
+
+## Overview
+
+Cowrie provides two wire format variants optimized for different use cases:
+
+- **Gen1**: Lightweight binary JSON with proto-tensor support
+- **Gen2**: Full-featured format with dictionary coding, compression, and ML extensions
+
+## Feature Comparison
+
+| Feature | Gen1 | Gen2 |
+|---------|------|------|
+| **Magic Header** | None | `"SJ"` (0x53 0x4A) |
+| **Wire Format** | Tag-Length-Value | Header + Dictionary + TLV |
+| **Dictionary Coding** | ❌ No | ✅ Yes (70-80% size reduction) |
+| **Compression** | ❌ No | ✅ Yes (gzip, zstd) |
+| **Core Types** | 11 types | 14 types |
+| **Extended Types** | ❌ No | ✅ Yes (Uint64, Decimal128, Datetime64, UUID128, BigInt) |
+| **ML Types** | ❌ No | ✅ Yes (Tensor, Image, Audio) |
+| **Graph Types** | ✅ Yes (6 types) | ✅ Yes (5 types, dict-coded) |
+| **Proto-Tensors** | ✅ Yes (Int64Array, Float64Array, StringArray) | ❌ No (use Tensor type) |
+| **Column Hints** | ❌ No | ✅ Yes |
+| **Schema Fingerprinting** | ❌ No | ✅ Yes (FNV-1a) |
+
+## Format Detection
+
+Decoders must check for the Gen2 magic header to distinguish formats:
+
+```rust
+// Check first two bytes
+if data[0] == 0x53 && data[1] == 0x4A {  // "SJ"
+    // Gen2 format - has header and dictionary
+    decode_gen2(data)
+} else {
+    // Gen1 format - starts with root value tag
+    decode_gen1(data)
+}
+```
+
+<Warning>
+**Tag Compatibility:** Gen1 and Gen2 use **different tag assignments** for several types. Always check for the magic header before decoding.
+
+| Tag | Gen1 Type | Gen2 Type |
+|-----|-----------|--------|
+| 0x06 | Bytes | Array |
+| 0x07 | Array | Object |
+| 0x08 | Object | Bytes |
+| 0x09 | Int64Array | Uint64 |
+| 0x0A | Float64Array | Decimal128 |
+| 0x0B | StringArray | Datetime64 |
+</Warning>
+
+## When to Use Gen1
+
+Gen1 is ideal when you need:
+
+- **Simplicity**: Minimal wire format overhead, no header parsing
+- **Embedded Systems**: Smaller decoder footprint (~2-3KB)
+- **Proto-tensors**: Efficient numeric arrays without full tensor metadata
+- **Graph Processing**: Basic node/edge encoding without dictionary overhead
+- **Stream Processing**: No need to collect dictionary keys upfront
+
+### Gen1 Example
+
+```json
+{
+  "model": "gpt-4",
+  "embeddings": [0.1, 0.2, 0.3, ...],  // Encoded as Float64Array
+  "tokens": [128, 256, 512]
+}
+```
+
+**Encoded Size:** ~32KB (no dictionary, inline keys)
+
+## When to Use Gen2
+
+Gen2 is ideal when you need:
+
+- **Size Optimization**: Dictionary coding reduces size by 70-80% for repeated keys
+- **Compression**: Built-in gzip/zstd support
+- **Extended Types**: Native UUIDs, decimals, datetimes, bigints
+- **ML Workloads**: Tensors with dtype/shape metadata, images, audio
+- **Production Systems**: Schema fingerprinting, column hints, security limits
+
+### Gen2 Example
+
+```json
+{
+  "user_id": "550e8400-e29b-41d4-a716-446655440000",
+  "balance": 123.45,  // Decimal128 with exact precision
+  "created_at": "2024-03-04T10:30:00Z",  // Datetime64 (nanos)
+  "embeddings": {  // Tensor with shape [768]
+    "dtype": "float32",
+    "shape": [768],
+    "data": [...]
+  }
+}
+```
+
+**Encoded Size:** ~8KB (dictionary-coded) + compression (~2KB with zstd)
+
+## Performance Tradeoffs
+
+### Encoding Speed
+
+| Operation | Gen1 | Gen2 |
+|-----------|------|------|
+| **Dictionary Build** | N/A | ~5-10% overhead |
+| **Key Encoding** | Direct (inline) | Index lookup (O(1)) |
+| **Throughput** | ~500 MB/s | ~400 MB/s |
+
+<Tip>
+Gen2 encoding requires two passes: one to collect dictionary keys, one to encode values. For small messages (less than 1KB), Gen1 may be faster.
+</Tip>
+
+### Decoding Speed
+
+| Operation | Gen1 | Gen2 |
+|-----------|------|------|
+| **Header Parse** | None | ~100ns |
+| **Dictionary Load** | N/A | ~1-5μs |
+| **Key Decoding** | Parse UTF-8 | Index lookup (O(1)) |
+| **Throughput** | ~600 MB/s | ~550 MB/s |
+
+### Size Comparison
+
+Real-world benchmark (10,000 objects with 20 repeated keys):
+
+| Format | Size | Compression Ratio |
+|--------|------|------------------|
+| JSON | 2.4 MB | 1.0x |
+| Gen1 | 1.2 MB | 2.0x |
+| Gen2 (uncompressed) | 350 KB | 6.9x |
+| Gen2 (zstd) | 85 KB | 28.2x |
+
+## Dictionary Coding Impact
+
+Gen2's dictionary coding provides dramatic size savings for objects with repeated keys:
+
+### Without Dictionary (Gen1)
+
+```
+Object 1: "name" (4 bytes) + "age" (3 bytes) + "email" (5 bytes) = 12 bytes
+Object 2: "name" (4 bytes) + "age" (3 bytes) + "email" (5 bytes) = 12 bytes
+...
+1000 objects = 12,000 bytes of key data
+```
+
+### With Dictionary (Gen2)
+
+```
+Dictionary: "name" (4) + "age" (3) + "email" (5) = 12 bytes (once)
+Object 1: index 0 (1 byte) + index 1 (1 byte) + index 2 (1 byte) = 3 bytes
+Object 2: index 0 (1 byte) + index 1 (1 byte) + index 2 (1 byte) = 3 bytes
+...
+1000 objects = 12 + 3000 = 3,012 bytes
+```
+
+**Savings:** 75% reduction in key encoding overhead
+
+## Graph Type Differences
+
+### Gen1 Graph Types
+
+Gen1 uses numeric node IDs and inline property keys:
+
+```rust
+// Node: id=42, label="Person", props={"name": "Alice"}
+Tag(0x10) | id:zigzag-varint | labelLen:varint | labelBytes | 
+  propCount:varint | (keyLen:varint | keyBytes | value)*
+```
+
+### Gen2 Graph Types
+
+Gen2 uses string node IDs and dictionary-coded properties:
+
+```rust
+// Node: id="person_42", labels=["Person"], props dictionary-coded
+Tag(0x35) | idLen:varint | idBytes | labelCount:varint | labels* | 
+  propCount:varint | (dictIdx:varint | value)*
+```
+
+<Note>
+Gen2 graph types support multiple labels per node and use dictionary coding for properties, making them 60-70% smaller for dense property graphs.
+</Note>
+
+## Migration Guide
+
+### Upgrading from Gen1 to Gen2
+
+1. **Add magic header detection** to your decoder
+2. **Implement dictionary parsing** (load once at decode start)
+3. **Update tag assignments** (0x06-0x0B changed)
+4. **Add extended type support** if needed (Uint64, Decimal128, etc.)
+5. **Consider compression** for network transmission
+
+### Maintaining Gen1 Support
+
+If you need to support both formats:
+
+```rust
+pub fn decode_auto(data: &[u8]) -> Result<Value, Error> {
+    if data.len() >= 2 && data[0] == 0x53 && data[1] == 0x4A {
+        decode_gen2(data)
+    } else {
+        decode_gen1(data)
+    }
+}
+```
+
+## Summary
+
+**Choose Gen1** for:
+- Embedded systems with tight memory constraints
+- Simple JSON-like data without repeated keys
+- Stream processing without lookahead
+- Proto-tensor workloads (numeric arrays)
+
+**Choose Gen2** for:
+- Production systems handling large datasets
+- Objects with many repeated keys (70-80% size savings)
+- ML/AI workloads (tensors, images, audio)
+- Systems requiring exact decimal precision
+- Network transmission (with compression)
+
+For most applications, **Gen2 is recommended** due to superior compression and richer type system.

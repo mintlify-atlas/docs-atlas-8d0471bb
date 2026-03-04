@@ -1,0 +1,340 @@
+---
+title: 'Optimization Guide'
+description: 'Tips and techniques for maximizing Cowrie performance'
+---
+
+## Overview
+
+This guide provides practical optimization strategies for both Gen1 and Gen2 codecs. Follow these guidelines to achieve optimal performance for your use case.
+
+## When to Use Gen1 vs Gen2
+
+| Use Case | Recommended | Why |
+|----------|-------------|-----|
+| Simple JSON APIs | Gen1 | Faster, simpler, lower latency |
+| Repeated schemas (logs, events) | Gen2 | Dictionary coding saves ~50% |
+| ML pipelines (tensors, images) | Gen2 | Native ML type support |
+| Graph data (GNN) | Gen2 | Node, Edge, GraphShard types |
+| Embedded/IoT | Gen1 | Smaller code footprint |
+| Real-time systems | Gen1 | Single-pass, predictable latency |
+| Bulk data transfer | Gen2 + compression | Best compression ratio |
+| High-frequency trading | Gen1 | Minimal encode/decode time |
+
+## Array Promotion Optimization
+
+### What is Array Promotion?
+
+When encoding arrays with 4+ elements of the same numeric type, Cowrie automatically promotes them to typed arrays (Int64Array, Float64Array, StringArray) for more efficient encoding.
+
+### Threshold: 4 Elements
+
+```go
+// Gen1 - Automatic promotion
+data := []float64{1.0, 2.0, 3.0}         // Array (generic)
+data := []float64{1.0, 2.0, 3.0, 4.0}    // Float64Array (promoted)
+```
+
+**Why 4?**
+- Typed array overhead: 2-3 bytes (tag + length varint)
+- Generic array: 1 byte per element tag + value
+- Break-even point: ~4 elements
+
+### Manual Control (Advanced)
+
+Some implementations allow overriding the threshold:
+
+```python
+# Python - Custom threshold
+from cowrie import gen1
+
+# Promote arrays with 10+ elements only
+data = gen1.encode(my_data, array_threshold=10)
+```
+
+**When to adjust:**
+- Lower threshold (2-3): Dense numeric workloads (ML, scientific)
+- Higher threshold (8-10): Mixed data with small arrays
+
+## Gen2 Dictionary Coding
+
+### How Dictionary Coding Works
+
+Gen2 collects all unique object keys during encoding and stores them once in the header. Objects then reference keys by index (varint).
+
+**Example:**
+
+```json
+// Input: 1000 objects with same keys
+[
+  {"id": 0, "name": "Alice", "value": 1.0},
+  {"id": 1, "name": "Bob", "value": 2.0},
+  // ... 998 more
+]
+```
+
+**Encoding:**
+```
+Header: ["id", "name", "value"]  // Dictionary (3 keys)
+Objects: [
+  (0, value0), (1, value1), (2, value2),  // Indices instead of strings
+  (0, value3), (1, value4), (2, value5),
+  // ...
+]
+```
+
+**Savings:**
+- JSON: 48KB (keys repeated 1000 times)
+- Gen2: 23KB (keys stored once, 52% reduction)
+
+### Optimizing Dictionary Usage
+
+**Best case:** Homogeneous arrays of objects
+```go
+// Excellent for Gen2 - repeated schema
+logs := []map[string]any{
+    {"timestamp": t1, "level": "info", "message": m1},
+    {"timestamp": t2, "level": "warn", "message": m2},
+    // ... thousands more with same keys
+}
+```
+
+**Worst case:** Heterogeneous objects
+```go
+// Poor for Gen2 - unique keys per object
+data := []map[string]any{
+    {"field_a": 1},
+    {"field_b": 2},
+    {"field_c": 3},
+    // ... all different keys
+}
+```
+
+Use Gen1 for heterogeneous data - dictionary overhead outweighs savings.
+
+## Compression Tradeoffs
+
+Gen2 supports optional compression (gzip, zstd):
+
+### When to Enable Compression
+
+**Enable when:**
+- Network bandwidth is constrained
+- Storage cost matters
+- Data has repetitive patterns
+- Decode latency is acceptable
+
+**Disable when:**
+- CPU is constrained
+- Ultra-low latency required
+- Data is already compressed (images, audio)
+- Throughput > bandwidth
+
+### Compression Ratios
+
+| Data Type | Gen2 Uncompressed | Gen2 + gzip | Gen2 + zstd |
+|-----------|-------------------|-------------|-------------|
+| Text-heavy JSON | 100% | ~30-40% | ~25-35% |
+| Numeric arrays | 100% | ~60-70% | ~50-60% |
+| Mixed data | 100% | ~50-60% | ~40-50% |
+| Graph data | 100% | ~40-50% | ~35-45% |
+
+**Performance impact:**
+- gzip: 3-5x slower encode, 2-3x slower decode
+- zstd: 2-3x slower encode, 1.5-2x slower decode
+
+### Compression Example
+
+```go
+// Go - Gen2 with compression
+import "github.com/phenomenon0/cowrie-final/go/gen2"
+
+val := gen2.Object(
+    gen2.Member{Key: "data", Value: gen2.String("large text...")},
+)
+
+// Encode with zstd compression
+data, err := gen2.EncodeWithOptions(val, gen2.Options{
+    Compress: true,
+    CompressionType: gen2.CompressionZstd,
+})
+```
+
+```python
+# Python - Gen2 with compression
+from cowrie.gen2 import encode, Value, CompressionType
+
+val = Value.object({"data": Value.string("large text...")})
+data = encode(val, compress=True, compression_type=CompressionType.ZSTD)
+```
+
+## Memory Optimization
+
+### Streaming Large Payloads
+
+For large datasets, use streaming APIs to avoid loading everything into memory:
+
+**Gen1 - Record-by-Record:**
+```go
+// Go - Stream decode
+dec := gen1.NewStreamDecoder(conn)
+for {
+    val, err := dec.Next()
+    if err == io.EOF {
+        break
+    }
+    processRecord(val)  // Process one at a time
+}
+```
+
+**Gen2 - Framed Master Stream:**
+```go
+// Go - Master stream
+frame := gen2.NewMasterFrame(data)
+frame.SetMetadata("batch_id", "42")
+frame.WriteTo(writer)
+
+// Read without loading full payload
+frame, _ := gen2.ReadMasterFrame(reader)
+meta := frame.Metadata()  // Access metadata first
+val := frame.Value()      // Load payload if needed
+```
+
+### Column-wise Access (Gen2 Only)
+
+Read specific fields without deserializing entire objects:
+
+```go
+// Go - Column reader
+cr := gen2.NewColumnReader(data)
+names := cr.Column("name")  // Only decode "name" field
+ages := cr.Column("age")    // Only decode "age" field
+
+// Skip processing other fields entirely
+```
+
+**Use cases:**
+- Analytics queries (SELECT name, age FROM data)
+- Partial updates
+- Large objects with many fields
+
+## Graph Type Optimization
+
+### Batch Operations
+
+Use batch types for bulk operations:
+
+```go
+// Go - NodeBatch for bulk insertion
+nodes := make([]*gen2.Value, 1000)
+for i := range nodes {
+    nodes[i] = gen2.Node(gen2.NodeConfig{
+        ID: fmt.Sprintf("node_%d", i),
+        Labels: []string{"Entity"},
+        Props: map[string]any{"x": float64(i)},
+    })
+}
+batch := gen2.NodeBatch(nodes...)
+data, _ := gen2.Encode(batch)
+```
+
+**Savings:**
+- Single dictionary for all nodes
+- Efficient batch encoding
+- 30-40% smaller than encoding nodes individually
+
+### GraphShard for Mini-batches
+
+For GNN training, use GraphShard to encode complete subgraphs:
+
+```python
+# Python - GraphShard for GNN mini-batch
+from cowrie.gen2 import Value, NodeData, EdgeData
+
+nodes = [NodeData(id=f"n{i}", labels=["Node"], props={...}) for i in range(100)]
+edges = [EdgeData(from_id=..., to_id=..., edge_type="EDGE", props={...}) for _ in range(200)]
+
+shard = Value.graph_shard(nodes, edges, metadata={"epoch": 5, "batch": 42})
+data = encode(shard)  # Optimized for GNN checkpointing
+```
+
+## Language-Specific Tips
+
+### Go
+
+- Use `gen1.Encode()` directly for simple types
+- Preallocate buffers for repeated encoding
+- Use `sync.Pool` to reuse encoder/decoder instances
+
+```go
+var encoderPool = sync.Pool{
+    New: func() any { return gen1.NewEncoder() },
+}
+
+enc := encoderPool.Get().(*gen1.Encoder)
+defer encoderPool.Put(enc)
+```
+
+### Python
+
+- Use C extension for performance-critical paths
+- Batch operations to amortize overhead
+- Consider PyPy for 2-3x speedup
+
+### Rust
+
+- Use `&[u8]` slices to avoid allocations
+- Enable `simd` feature for varint decoding
+- Use `rkyv` integration for zero-copy deserialization
+
+### TypeScript/JavaScript
+
+- Use ArrayBuffer for binary data
+- Avoid copying with TypedArray views
+- Use Web Workers for background encoding
+
+## Profiling and Measurement
+
+### Measuring Performance
+
+**Go:**
+```bash
+go test -bench=. -benchmem -cpuprofile=cpu.prof
+go tool pprof cpu.prof
+```
+
+**Python:**
+```python
+import cProfile
+cProfile.run('encode_test()', sort='cumtime')
+```
+
+### Common Bottlenecks
+
+1. **String encoding**: UTF-8 validation is expensive
+   - **Fix**: Use bytes when possible, cache validated strings
+
+2. **Dictionary building**: Linear scan of keys
+   - **Fix**: Use Gen1 if schema is unpredictable
+
+3. **Memory allocations**: Frequent small allocations
+   - **Fix**: Preallocate buffers, use object pools
+
+4. **Nested depth**: Recursive encoding/decoding
+   - **Fix**: Flatten structures when possible
+
+## Best Practices Summary
+
+1. **Choose the right format**: Gen1 for speed, Gen2 for size
+2. **Use typed arrays**: Let promotion threshold work for you
+3. **Batch graph operations**: Leverage NodeBatch/EdgeBatch
+4. **Stream large data**: Avoid loading everything into memory
+5. **Profile first**: Measure before optimizing
+6. **Test compression**: May provide 2-3x size reduction
+7. **Cache encoders**: Reuse encoder instances in hot paths
+8. **Validate assumptions**: Run benchmarks on your data
+
+## Next Steps
+
+- See [Benchmarks](/performance/benchmarks) for real numbers
+- See [Comparison](/performance/comparison) for format selection
+- Profile your application to identify bottlenecks

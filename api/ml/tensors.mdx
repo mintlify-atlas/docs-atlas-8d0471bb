@@ -1,0 +1,229 @@
+---
+title: 'Tensors'
+description: 'Multi-dimensional arrays for ML workloads in Cowrie'
+---
+
+## Overview
+
+Cowrie provides native support for multi-dimensional tensors through the `Tensor` (tag `0x20`) and `TensorRef` (tag `0x21`) types. These types enable efficient serialization of neural network weights, embeddings, and other ML data without base64 encoding overhead.
+
+## Tensor (TagTensor / 0x20)
+
+The `Tensor` type represents a multi-dimensional array with a specific data type and shape.
+
+### Wire Format
+
+```
+Tag(0x20) | dtype:u8 | rank:u8 | dims:varint* | dataLen:varint | data:bytes
+```
+
+- **dtype** (u8): Data type code (see DTypes below)
+- **rank** (u8): Number of dimensions (0-255, with default max 32)
+- **dims** (varint*): Shape dimensions, encoded as varints (rank values)
+- **dataLen** (varint): Length of raw tensor data in bytes
+- **data** (bytes): Raw binary tensor data in row-major (C-order) layout
+
+### Data Types (DType)
+
+| Code | Type | Size (bytes) | Description |
+|------|------|--------------|-------------|
+| `0x01` | float32 | 4 | 32-bit floating point |
+| `0x02` | float16 | 2 | 16-bit floating point (half precision) |
+| `0x03` | bfloat16 | 2 | Brain float16 (ML optimized) |
+| `0x04` | int8 | 1 | 8-bit signed integer |
+| `0x05` | int16 | 2 | 16-bit signed integer |
+| `0x06` | int32 | 4 | 32-bit signed integer |
+| `0x07` | int64 | 8 | 64-bit signed integer |
+| `0x08` | uint8 | 1 | 8-bit unsigned integer |
+| `0x09` | uint16 | 2 | 16-bit unsigned integer |
+| `0x0A` | uint32 | 4 | 32-bit unsigned integer |
+| `0x0B` | uint64 | 8 | 64-bit unsigned integer |
+| `0x0C` | float64 | 8 | 64-bit floating point (double precision) |
+| `0x0D` | bool | 1 | Boolean (0 or 1) |
+
+### Quantized Types (Experimental)
+
+| Code | Type | Description |
+|------|------|-------------|
+| `0x10` | qint4 | 4-bit quantized integer |
+| `0x11` | qint2 | 2-bit quantized integer |
+| `0x12` | qint3 | 3-bit quantized integer |
+| `0x13` | ternary | Ternary values (-1, 0, 1) |
+| `0x14` | binary | Binary values (0, 1) |
+
+## Construction
+
+### TypeScript
+
+```typescript
+import { SJ, DType } from 'cowrie';
+
+// Create a 2x3 float32 tensor
+const data = new Float32Array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+const tensor = SJ.tensor(
+  DType.FLOAT32,
+  [2, 3],  // shape
+  new Uint8Array(data.buffer)
+);
+
+// Encode
+const encoded = encode(tensor);
+
+// Decode
+const decoded = decode(encoded);
+const tensorData = decoded.data as TensorData;
+console.log(tensorData.dtype);  // DType.FLOAT32
+console.log(tensorData.shape);  // [2, 3]
+console.log(tensorData.data);   // Uint8Array
+```
+
+### Python
+
+```python
+import numpy as np
+from cowrie import encode, decode
+
+# Create a 2x3 float32 tensor
+arr = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+tensor = {"type": "tensor", "dtype": "float32", "shape": [2, 3], "data": arr.tobytes()}
+
+# Encode
+encoded = encode(tensor)
+
+# Decode
+decoded = decode(encoded)
+print(decoded["shape"])  # [2, 3]
+```
+
+## Zero-Copy Views (TypeScript)
+
+Cowrie provides zero-copy views for efficient tensor access when alignment permits:
+
+```typescript
+import { tensorViewFloat32, tensorCopyFloat32 } from 'cowrie';
+
+// Try zero-copy view first (only works if properly aligned)
+let view = tensorViewFloat32(tensorData);
+
+// Fallback to copy if alignment is wrong
+if (!view) {
+  view = tensorCopyFloat32(tensorData);
+}
+
+// Now you can access data efficiently
+console.log(view[0]);  // 1.0
+```
+
+Available view functions:
+- `tensorViewFloat32()` / `tensorCopyFloat32()`
+- `tensorViewFloat64()` / `tensorCopyFloat64()`
+- `tensorViewInt32()` / `tensorCopyInt32()`
+
+## Data Layout
+
+Tensors use **row-major (C-order)** layout, stored as little-endian:
+
+For a 2x3 tensor `[[1, 2, 3], [4, 5, 6]]`:
+```
+Memory: [1, 2, 3, 4, 5, 6]
+```
+
+For a 2x2x2 tensor:
+```
+Shape: [2, 2, 2]
+Memory: [a[0,0,0], a[0,0,1], a[0,1,0], a[0,1,1], a[1,0,0], a[1,0,1], a[1,1,0], a[1,1,1]]
+```
+
+## TensorRef (TagTensorRef / 0x21)
+
+The `TensorRef` type provides indirect references to tensors stored in external systems (object stores, tensor databases, GPU memory).
+
+### Wire Format
+
+```
+Tag(0x21) | storeId:u8 | keyLen:varint | key:bytes
+```
+
+- **storeId** (u8): Store/shard identifier (0-255)
+- **keyLen** (varint): Length of lookup key
+- **key** (bytes): Lookup key (UUID, hash, file path, etc.)
+
+### Construction
+
+```typescript
+// Reference a tensor by UUID in store 0
+const tensorRef = SJ.tensorRef(
+  0,  // storeId
+  new TextEncoder().encode("550e8400-e29b-41d4-a716-446655440000")
+);
+```
+
+### Use Cases
+
+- Large model weights stored separately
+- GPU tensor handles
+- Distributed tensor shards
+- Lazy loading from cloud storage
+
+## Security Limits
+
+| Limit | Default | Description |
+|-------|---------|-------------|
+| MaxRank | 32 | Maximum tensor dimensions |
+| MaxBytesLen | 1GB | Maximum tensor data size |
+
+Decoders MUST:
+1. Reject rank > MaxRank (default 32)
+2. Reject rank > 255 (wire format limit)
+3. Reject data length > MaxBytesLen
+
+## Example: Neural Network Weights
+
+```typescript
+import { SJ, DType, encode, decode } from 'cowrie';
+
+// Embedding matrix: 10,000 vocab x 512 dims
+const vocabSize = 10000;
+const embeddingDim = 512;
+const weights = new Float32Array(vocabSize * embeddingDim);
+
+// ... fill weights ...
+
+const embedding = SJ.tensor(
+  DType.FLOAT32,
+  [vocabSize, embeddingDim],
+  new Uint8Array(weights.buffer)
+);
+
+// Wrap in an object with metadata
+const model = SJ.object({
+  "version": SJ.str("1.0"),
+  "embedding": embedding,
+  "vocab_size": SJ.int(vocabSize),
+  "dim": SJ.int(embeddingDim)
+});
+
+const encoded = encode(model);
+// Much more efficient than JSON with base64!
+```
+
+## Performance
+
+Tensor encoding is **10-100x more efficient** than JSON with base64:
+
+| Format | Size | Overhead |
+|--------|------|----------|
+| Cowrie Tensor | N bytes | ~10 bytes (header) |
+| JSON + base64 | 1.33N bytes | 33% inflation |
+| MessagePack | 1.33N bytes | Still base64 |
+
+For a 10M parameter model (40MB float32):
+- **Cowrie**: 40.00 MB
+- **JSON**: 53.2 MB
+- **Savings**: 24.8% smaller
+
+## See Also
+
+- [Images](/api/ml/images) - Image encoding formats
+- [Audio](/api/ml/audio) - Audio encoding formats
+- [Wire Format Spec](/concepts/wire-format) - Full protocol details

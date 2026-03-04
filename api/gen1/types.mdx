@@ -1,0 +1,475 @@
+---
+title: "Types"
+description: "Complete type reference for Gen1 Cowrie format"
+---
+
+## Overview
+
+Gen1 supports 11 core types plus 6 specialized graph types. All types use compact binary encoding with explicit type tags.
+
+## Core Types (0x00-0x0B)
+
+### Null (0x00)
+
+Represents a null/nil value. Encoded as a single byte.
+
+```go
+gen1.Encode(nil) // [0x00]
+```
+
+### Bool (0x01, 0x02)
+
+Boolean values use dedicated tags:
+- `false` → 0x01
+- `true` → 0x02
+
+```go
+gen1.Encode(false) // [0x01]
+gen1.Encode(true)  // [0x02]
+```
+
+### Int64 (0x03)
+
+All integer types encode as varint (variable-length integer). Supports int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64.
+
+```go
+gen1.Encode(int64(42))   // [0x03, <varint>]
+gen1.Encode(int(-100))   // [0x03, <varint>]
+gen1.Encode(uint32(256)) // [0x03, <varint>]
+```
+
+**Encoding:** Tag (1 byte) + varint (1-10 bytes)
+
+**Decodes to:** `int64`
+
+### Float64 (0x04)
+
+Scalar floating-point values (float32 or float64).
+
+```go
+gen1.Encode(float64(3.14159)) // [0x04, <8 bytes LE>]
+gen1.Encode(float32(2.71))    // [0x04, <8 bytes LE>]
+```
+
+**Encoding:** Tag (1 byte) + IEEE 754 double (8 bytes, little-endian)
+
+**Decodes to:** `float64`
+
+### String (0x05)
+
+UTF-8 encoded strings.
+
+```go
+gen1.Encode("hello")        // [0x05, <length:uvarint>, ...bytes]
+gen1.Encode("hello 世界 🌍") // [0x05, <length:uvarint>, ...utf8]
+```
+
+**Encoding:** Tag (1 byte) + length (uvarint) + UTF-8 bytes
+
+**Decodes to:** `string`
+
+**Security:** Length limited by `MaxStringLen` (default: 500MB)
+
+### Bytes (0x06)
+
+Raw binary data.
+
+```go
+gen1.Encode([]byte{0xDE, 0xAD, 0xBE, 0xEF})
+// [0x06, <length:uvarint>, 0xDE, 0xAD, 0xBE, 0xEF]
+```
+
+**Encoding:** Tag (1 byte) + length (uvarint) + raw bytes
+
+**Decodes to:** `[]byte` (copy, not shared)
+
+**Security:** Length limited by `MaxBytesLen` (default: 1GB)
+
+### Array (Generic) (0x07)
+
+Heterogeneous arrays containing mixed types.
+
+```go
+gen1.Encode([]any{"hello", int64(42), true, nil})
+// [0x07, <count:uvarint>, <value1>, <value2>, ...]
+```
+
+**Encoding:** Tag (1 byte) + element count (uvarint) + encoded elements
+
+**Decodes to:** `[]any`
+
+**Note:** Arrays with ≥4 homogeneous numeric elements automatically promote to proto-tensor encoding (0x09, 0x0A, or 0x0C).
+
+### Object (0x08)
+
+Key-value maps with string keys.
+
+```go
+gen1.Encode(map[string]any{
+    "name": "Alice",
+    "age":  int64(30),
+})
+// [0x08, <count:uvarint>, <key1>, <value1>, <key2>, <value2>, ...]
+```
+
+**Encoding:** Tag (1 byte) + field count (uvarint) + (key length + key bytes + value) pairs
+
+**Key Ordering:** Deterministic (alphabetically sorted)
+
+**Decodes to:** `map[string]any`
+
+**Security:** Field count limited by `MaxObjectLen` (default: 10M)
+
+## Proto-Tensor Types (0x09-0x0C)
+
+Efficient binary encoding for homogeneous numeric arrays.
+
+### Int64Array (0x09)
+
+Homogeneous int64 arrays using fixed 8-byte encoding.
+
+```go
+gen1.Encode([]int64{1, 2, 3, 4, 5})
+// [0x09, <count:uvarint>, <int64_LE>, <int64_LE>, ...]
+
+gen1.Encode([]int{10, 20, 30, 40})
+// Auto-converts to []int64, same encoding
+```
+
+**Encoding:** Tag (1 byte) + count (uvarint) + int64 values (8 bytes each, little-endian)
+
+**Decodes to:** `[]int64`
+
+**Security:** Count limited by `MaxArrayLen` (default: 100M)
+
+### Float64Array (0x0A)
+
+Homogeneous float64 arrays (high precision).
+
+```go
+gen1.EncodeWithOptions(
+    []float64{0.1, 0.2, 0.3, 0.4},
+    gen1.EncodeOptions{HighPrecision: true}, // default
+)
+// [0x0A, <count:uvarint>, <float64_LE>, <float64_LE>, ...]
+```
+
+**Encoding:** Tag (1 byte) + count (uvarint) + float64 values (8 bytes each, IEEE 754, little-endian)
+
+**Decodes to:** `[]float64`
+
+**When Used:**
+- `EncodeOptions{HighPrecision: true}` (default)
+- Cross-language compatibility
+- Financial or scientific data requiring full precision
+
+### String Array (0x0B)
+
+Homogeneous string arrays.
+
+```go
+gen1.Encode([]string{"apple", "banana", "cherry"})
+// [0x0B, <count:uvarint>, <len1>, <str1>, <len2>, <str2>, ...]
+```
+
+**Encoding:** Tag (1 byte) + count (uvarint) + (string length + string bytes) pairs
+
+**Decodes to:** `[]string`
+
+### Float32Array (0x0C)
+
+Homogeneous float32 arrays (compact, ~50% size reduction).
+
+```go
+gen1.EncodeWithOptions(
+    []float64{0.1, 0.2, 0.3, 0.4},
+    gen1.EncodeOptions{HighPrecision: false},
+)
+// [0x0C, <count:uvarint>, <float32_LE>, <float32_LE>, ...]
+
+gen1.Encode([]float32{1.1, 2.2, 3.3, 4.4})
+// Same encoding
+```
+
+**Encoding:** Tag (1 byte) + count (uvarint) + float32 values (4 bytes each, IEEE 754, little-endian)
+
+**Decodes to:** `[]float64` (promoted to float64 for API consistency)
+
+**When Used:**
+- `EncodeOptions{HighPrecision: false}`
+- ML embeddings/features (most models use float32 internally)
+- Sensor data, graphics, game state
+- Go-only workloads prioritizing size
+
+**Trade-off:** Precision loss (~7 significant digits vs 15 for float64)
+
+## Graph Types (0x10-0x15)
+
+Specialized types for graph neural network (GNN) workloads.
+
+### Node (0x10)
+
+Graph node with ID, labels, and properties.
+
+```go
+type Node struct {
+    ID     string         // Node identifier
+    Labels []string       // Optional labels (e.g., ["Person", "Employee"])
+    Props  map[string]any // Optional properties
+}
+```
+
+**Example:**
+
+```go
+node := gen1.Node{
+    ID:     "user-123",
+    Labels: []string{"Person", "Customer"},
+    Props: map[string]any{
+        "name": "Alice",
+        "age":  int64(30),
+    },
+}
+data, _ := gen1.Encode(node)
+```
+
+**Encoding:** Tag (1 byte) + ID (string) + label count + labels + props (object)
+
+**Decodes to:** `gen1.Node`
+
+### Edge (0x11)
+
+Graph edge with source, target, type, and properties.
+
+```go
+type Edge struct {
+    ID    string         // Optional edge identifier
+    Type  string         // Edge type/label (e.g., "KNOWS", "FOLLOWS")
+    From  string         // Source node ID
+    To    string         // Target node ID
+    Props map[string]any // Optional properties
+}
+```
+
+**Example:**
+
+```go
+edge := gen1.Edge{
+    ID:   "edge-456",
+    Type: "KNOWS",
+    From: "user-123",
+    To:   "user-789",
+    Props: map[string]any{
+        "since": "2020-01-15",
+        "weight": 0.85,
+    },
+}
+data, _ := gen1.Encode(edge)
+```
+
+**Encoding:** Tag (1 byte) + ID + type + from + to + props (object)
+
+**Decodes to:** `gen1.Edge`
+
+### AdjList (0x12)
+
+Adjacency list for efficient neighborhood queries.
+
+```go
+type AdjList struct {
+    NodeID    int64   // Node ID (integer for efficiency)
+    Neighbors []int64 // Connected node IDs
+}
+```
+
+**Example:**
+
+```go
+adj := gen1.AdjList{
+    NodeID:    42,
+    Neighbors: []int64{10, 15, 23, 50},
+}
+data, _ := gen1.Encode(adj)
+```
+
+**Encoding:** Tag (1 byte) + nodeID (varint) + neighbor count (uvarint) + neighbors (varints)
+
+**Decodes to:** `gen1.AdjList`
+
+### NodeBatch (0x13)
+
+Batch of nodes for streaming ingestion.
+
+```go
+type NodeBatch struct {
+    Nodes []Node
+}
+```
+
+**Example:**
+
+```go
+batch := gen1.NodeBatch{
+    Nodes: []gen1.Node{
+        {ID: "n1", Labels: []string{"Person"}},
+        {ID: "n2", Labels: []string{"Person"}},
+    },
+}
+data, _ := gen1.Encode(batch)
+```
+
+**Encoding:** Tag (1 byte) + node count (uvarint) + inline nodes (no individual tags)
+
+**Decodes to:** `gen1.NodeBatch`
+
+### EdgeBatch (0x14)
+
+Batch of edges in COO (coordinate) format for bulk loading.
+
+```go
+type EdgeBatch struct {
+    Sources []int64          // Source node IDs
+    Targets []int64          // Target node IDs
+    Types   []string         // Optional edge types (nil if homogeneous)
+    Props   []map[string]any // Optional per-edge properties (nil if none)
+}
+```
+
+**Example:**
+
+```go
+batch := gen1.EdgeBatch{
+    Sources: []int64{1, 1, 2, 3},
+    Targets: []int64{2, 3, 3, 4},
+    Types:   []string{"KNOWS", "KNOWS", "FOLLOWS", "BLOCKS"},
+    Props:   nil, // No properties
+}
+data, _ := gen1.Encode(batch)
+```
+
+**Encoding:** Tag (1 byte) + edge count + flags (hasTypes, hasProps) + sources + targets + [types] + [props]
+
+**Decodes to:** `gen1.EdgeBatch`
+
+### GraphShard (0x15)
+
+Complete graph container optimized for GNN workloads.
+
+```go
+type GraphShard struct {
+    // Metadata
+    Name     string         // Optional shard name/identifier
+    Metadata map[string]any // Optional metadata
+
+    // Graph structure
+    Nodes []Node // Node definitions with properties
+    Edges []Edge // Edge definitions with properties
+
+    // COO format: parallel arrays for source/target node indices
+    EdgeIndex [][]int64 // [2][num_edges] - row 0 = sources, row 1 = targets
+
+    // Adjacency lists for fast neighborhood access
+    AdjLists []AdjList
+
+    // Node features as dense tensor (float64)
+    // Shape: [num_nodes, feature_dim]
+    NodeFeatures [][]float64
+
+    // Edge features as dense tensor
+    // Shape: [num_edges, feature_dim]
+    EdgeFeatures [][]float64
+
+    // Optional: node labels for classification tasks
+    NodeLabels []int64
+
+    // Optional: edge labels for link prediction
+    EdgeLabels []int64
+}
+```
+
+**Example:**
+
+```go
+gs := gen1.NewGraphShard("partition-0")
+gs.Metadata["version"] = "1.0"
+
+// Add nodes
+gs.AddNode(gen1.Node{ID: "n1", Labels: []string{"User"}})
+gs.AddNode(gen1.Node{ID: "n2", Labels: []string{"User"}})
+
+// Set edge index (COO format)
+gs.SetEdgeIndex(
+    []int64{0, 0, 1}, // sources
+    []int64{1, 2, 2}, // targets
+)
+
+// Set node features (e.g., embeddings)
+gs.SetNodeFeatures([][]float64{
+    {0.1, 0.2, 0.3}, // node 0 features
+    {0.4, 0.5, 0.6}, // node 1 features
+})
+
+// Build adjacency lists for neighborhood queries
+gs.BuildAdjLists()
+
+data, _ := gen1.Encode(gs)
+```
+
+**Encoding:** Complex format with flags indicating present sections. See source (gen1.go:1052-1218) for details.
+
+**Decodes to:** `gen1.GraphShard`
+
+**Use Cases:**
+- Storing subgraphs for mini-batch training
+- Caching graph partitions
+- Streaming graph data between services
+- Checkpointing GNN model inputs
+
+## Type Promotion
+
+Gen1 automatically promotes homogeneous arrays (≥4 elements) to proto-tensor encoding:
+
+```go
+// Input: []any with all ints
+input := []any{1, 2, 3, 4}
+data, _ := gen1.Encode(input)
+// Encoded as Int64Array (tag 0x09)
+
+// Input: []any with all floats
+input := []any{0.1, 0.2, 0.3, 0.4}
+data, _ := gen1.Encode(input)
+// Encoded as Float64Array (tag 0x0A) or Float32Array (0x0C)
+
+// Input: Mixed types (no promotion)
+input := []any{"hello", 42, true}
+data, _ := gen1.Encode(input)
+// Encoded as generic array (tag 0x07)
+```
+
+**Threshold:** `NumericArrayMin = 4`
+
+## Encoding Details
+
+### Varint
+
+Variable-length integer encoding (Protocol Buffers style):
+- 1 byte: 0-127
+- 2 bytes: 128-16,383
+- Up to 10 bytes for int64
+
+### Uvarint
+
+Unsigned varint for lengths/counts.
+
+### Determinism
+
+Object keys are always sorted alphabetically for deterministic encoding:
+
+```go
+map[string]any{"z": 1, "a": 2} // Encodes as: "a", "z"
+```
+
+This ensures:
+- Identical input → identical output
+- Reliable content hashing
+- Efficient delta encoding

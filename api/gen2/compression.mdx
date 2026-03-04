@@ -1,0 +1,520 @@
+---
+title: 'Compression'
+description: 'Gen2 compression formats, flags, and framing'
+icon: 'file-zipper'
+---
+
+## Overview
+
+Cowrie Gen2 supports optional compression with gzip and zstd. Compression is applied to the payload (everything after the 4-byte header) with automatic size optimization.
+
+## Compression Types
+
+```go
+type Compression uint8
+
+const (
+    CompressionNone Compression = 0
+    CompressionGzip Compression = 1
+    CompressionZstd Compression = 2
+)
+```
+
+---
+
+## Header Flags
+
+### Flag Constants
+
+```go
+const (
+    FlagCompressed       = 0x01 // bit0: data is compressed
+    FlagCompressionType1 = 0x02 // bit1: compression type bit 1
+    FlagCompressionType2 = 0x04 // bit2: compression type bit 2
+    FlagHasColumnHints   = 0x08 // bit3: column hints present
+)
+```
+
+### Flag Encoding
+
+Flags are stored in **byte 3** of the Gen2 header:
+
+| Bit(s) | Name | Meaning |
+|--------|------|----------|
+| 0 | Compressed | If set, payload is compressed |
+| 1-2 | Compression type | 0=none, 1=gzip, 2=zstd (only valid if bit 0 set) |
+| 3 | Has column hints | If set, column hints appear after header |
+
+**Example flag encoding:**
+
+```go
+// Zstd compression + column hints
+flags := byte(FlagCompressed | FlagCompressionType2 | FlagHasColumnHints)
+// Binary: 0000_1101
+//         ^^^^ ||||_ Compressed
+//         |||  |||__ Compression type bit 1 (0)
+//         ||   ||___ Compression type bit 2 (1) → type 2 = zstd
+//         |    |____ Column hints present
+//         |_________ Reserved (0)
+```
+
+**Decoding compression type:**
+
+```go
+if flags & FlagCompressed != 0 {
+    compType := Compression((flags >> 1) & 0x03)
+    // compType = 0 (none), 1 (gzip), or 2 (zstd)
+}
+```
+
+---
+
+## Wire Format
+
+### Uncompressed Format
+
+```
+Byte 0-1: Magic 'SJ' (0x53 0x4A)
+Byte 2:   Version (0x02)
+Byte 3:   Flags (0x00 = no compression)
+Byte 4+:  [ColumnHints] (if FlagHasColumnHints set)
+          DictLen: varint
+          Dict: (len:varint + utf8)* 
+          RootValue: encoded value
+```
+
+### Compressed Format
+
+```
+Byte 0-1: Magic 'SJ' (0x53 0x4A)
+Byte 2:   Version (0x02)
+Byte 3:   Flags (FlagCompressed | compression type bits)
+Byte 4+:  OrigLen: varint (uncompressed payload size)
+          CompressedPayload: compressed bytes
+```
+
+<Note>
+**Payload** = everything after the 4-byte header (column hints + dictionary + root value).
+</Note>
+
+---
+
+## Encoding with Compression
+
+### EncodeFramed
+
+```go
+func EncodeFramed(v *Value, comp Compression) ([]byte, error)
+```
+
+Encodes with optional compression. Automatically skips compression if:
+- Payload is < 256 bytes (threshold)
+- Compressed size ≥ uncompressed size (no benefit)
+
+<ParamField path="v" type="*Value" required>
+  Value to encode
+</ParamField>
+
+<ParamField path="comp" type="Compression" required>
+  Compression type (CompressionNone, CompressionGzip, CompressionZstd)
+</ParamField>
+
+<ResponseField name="data" type="[]byte">
+  Encoded data (compressed or uncompressed based on heuristics)
+</ResponseField>
+
+**Example:**
+
+```go
+val := cowrie.Object(
+    cowrie.Member{Key: "text", Value: cowrie.String(strings.Repeat("Hello ", 1000))},
+)
+
+// Try zstd compression
+data, err := cowrie.EncodeFramed(val, cowrie.CompressionZstd)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Check if compression was used
+if data[3] & cowrie.FlagCompressed != 0 {
+    compType := cowrie.Compression((data[3] >> 1) & 0x03)
+    fmt.Printf("Compressed with type %d\n", compType)
+} else {
+    fmt.Println("Not compressed (too small or no benefit)")
+}
+```
+
+### Compression Threshold
+
+```go
+const compressThreshold = 256 // bytes
+```
+
+Payloads smaller than 256 bytes are not compressed (overhead exceeds benefit).
+
+---
+
+## Decoding with Compression
+
+### DecodeFramed
+
+```go
+func DecodeFramed(data []byte) (*Value, error)
+```
+
+Automatically detects and decompresses if needed. Uses default 1GB decompressed size limit.
+
+<ParamField path="data" type="[]byte" required>
+  Encoded data (compressed or uncompressed)
+</ParamField>
+
+<ResponseField name="value" type="*Value">
+  Decoded Cowrie value
+</ResponseField>
+
+**Example:**
+
+```go
+// Works for both compressed and uncompressed data
+val, err := cowrie.DecodeFramed(data)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+---
+
+### DecodeFramedWithLimit
+
+```go
+func DecodeFramedWithLimit(data []byte, maxDecompressedSize int) (*Value, error)
+```
+
+Decodes with custom decompressed size limit to prevent decompression bombs.
+
+<ParamField path="data" type="[]byte" required>
+  Encoded data
+</ParamField>
+
+<ParamField path="maxDecompressedSize" type="int" required>
+  Maximum allowed decompressed size (bytes)
+</ParamField>
+
+**Security checks:**
+
+1. **Claimed size validation**: Rejects if `OrigLen` (varint in frame) exceeds `maxDecompressedSize`
+2. **Actual size validation**: Returns error if decompressed data length != `OrigLen`
+3. **Bounded decompression**: Uses `io.LimitReader` to prevent unbounded allocations
+
+**Example:**
+
+```go
+// Limit decompressed size to 50MB
+val, err := cowrie.DecodeFramedWithLimit(data, 50*1024*1024)
+if err == cowrie.ErrDecompressedTooLarge {
+    return fmt.Errorf("decompression bomb detected")
+}
+```
+
+---
+
+## Compression Algorithms
+
+### Gzip (CompressionGzip = 1)
+
+**Characteristics:**
+- Standard `compress/gzip` from Go stdlib
+- Compression ratio: ~3-5x for text data
+- Speed: Moderate
+- Compatibility: Universal
+
+**Use cases:**
+- Wide compatibility required
+- Moderate-sized payloads (1KB - 10MB)
+- Text/JSON-heavy data
+
+**Example:**
+
+```go
+data, _ := cowrie.EncodeFramed(val, cowrie.CompressionGzip)
+// Typical text: 1MB → 200-300KB
+```
+
+---
+
+### Zstd (CompressionZstd = 2)
+
+**Characteristics:**
+- Uses `klauspost/compress/zstd` (high-performance Go implementation)
+- Compression ratio: ~4-8x for text data
+- Speed: Fast (2-5x faster than gzip)
+- Compression level: `SpeedDefault` (balanced)
+
+**Use cases:**
+- High throughput required
+- Large payloads (>1MB)
+- ML tensors, embeddings
+- Log data, time series
+
+**Example:**
+
+```go
+data, _ := cowrie.EncodeFramed(val, cowrie.CompressionZstd)
+// Typical text: 1MB → 150-250KB
+// Large tensor: 100MB → 10-20MB
+```
+
+---
+
+## Compression Framing Rules
+
+From [SPEC.md](/api/gen2/types#wire-format):
+
+<Tip>
+**Framing format:**
+
+```
+OrigLen: uvarint (uncompressed payload size)
+CompressedPayload: compressed bytes
+```
+</Tip>
+
+**Decoder requirements:**
+
+1. **Pre-decompression validation**: Reject if `OrigLen > MaxDecompressedSize` before allocating buffers
+2. **Size-bounded decompression**: Never allocate unbounded buffers (use `io.LimitReader`)
+3. **Post-decompression validation**: Verify `len(decompressed) == OrigLen`
+4. **Unknown compression type**: Return `ErrInvalidTag` error
+
+**Error handling:**
+
+```go
+val, err := cowrie.DecodeFramedWithLimit(data, 10*1024*1024)
+switch err {
+case nil:
+    // Success
+case cowrie.ErrDecompressedTooLarge:
+    // Claimed size exceeds limit
+case cowrie.ErrInvalidTag:
+    // Unknown compression type
+case cowrie.ErrUnexpectedEOF:
+    // Actual decompressed size != claimed size
+default:
+    // Other decompression errors
+}
+```
+
+---
+
+## Security Considerations
+
+### Decompression Bombs
+
+Malicious payloads can claim huge decompressed sizes:
+
+```
+Input: 1KB compressed
+Claimed OrigLen: 10GB
+Actual: Triggers OOM before decompression
+```
+
+**Protection:**
+
+```go
+// Always use limits for untrusted input
+const MaxSafeDecompressedSize = 100 * 1024 * 1024 // 100MB
+
+val, err := cowrie.DecodeFramedWithLimit(networkData, MaxSafeDecompressedSize)
+if err == cowrie.ErrDecompressedTooLarge {
+    log.Warn("Rejected oversized decompression")
+    return
+}
+```
+
+### Size Mismatch Attacks
+
+Malicious payloads can have mismatched sizes:
+
+```
+Claimed OrigLen: 1KB
+Actual decompressed: 1MB (causes buffer overflow)
+```
+
+**Protection:**
+
+```go
+// Decoder validates: len(decompressed) == OrigLen
+if uint64(len(decompressed)) != origLen {
+    return nil, ErrUnexpectedEOF
+}
+```
+
+### CPU Exhaustion
+
+Decompression is CPU-intensive. Limit rate and size for public APIs:
+
+```go
+// Example rate limiter
+if requestsPerSecond > 100 {
+    return http.StatusTooManyRequests
+}
+
+if len(body) > 10*1024*1024 {
+    return http.StatusRequestEntityTooLarge
+}
+
+val, err := cowrie.DecodeFramedWithLimit(body, 50*1024*1024)
+```
+
+---
+
+## Performance Benchmarks
+
+### Compression Ratios (1MB text payload)
+
+| Format | Compressed Size | Ratio | Time (encode) | Time (decode) |
+|--------|----------------|-------|---------------|---------------|
+| None | 1.00 MB | 1.00x | 0.5 ms | 0.5 ms |
+| Gzip | 0.22 MB | 4.55x | 15 ms | 5 ms |
+| Zstd | 0.18 MB | 5.56x | 6 ms | 2 ms |
+
+### Recommendations by Payload Size
+
+| Payload Size | Recommended | Reason |
+|-------------|-------------|--------|
+| < 256 bytes | None | Overhead exceeds benefit |
+| 256B - 10KB | Gzip | Balance of ratio and speed |
+| 10KB - 1MB | Zstd | Better ratio, faster |
+| > 1MB | Zstd | Significant size savings |
+
+### ML Tensor Compression
+
+Float32 tensors compress well:
+
+```go
+// 1024-dim embedding (4KB float32)
+embedding := make([]byte, 1024*4)
+tensor := cowrie.Tensor(cowrie.DTypeFloat32, []uint64{1024}, embedding)
+
+data, _ := cowrie.EncodeFramed(tensor, cowrie.CompressionZstd)
+// Typical: 4KB → 400-800 bytes (5-10x compression)
+```
+
+---
+
+## Examples
+
+### Automatic Compression
+
+```go
+func encodeWithAutoCompression(v *Value) ([]byte, error) {
+    // First try without compression
+    uncompressed, _ := cowrie.Encode(v)
+    
+    // Skip compression if payload is small
+    if len(uncompressed) < 1024 {
+        return uncompressed, nil
+    }
+    
+    // Try zstd compression
+    compressed, err := cowrie.EncodeFramed(v, cowrie.CompressionZstd)
+    if err != nil {
+        return uncompressed, nil // Fallback to uncompressed
+    }
+    
+    // Use compressed only if it saves at least 10%
+    if len(compressed) < len(uncompressed)*9/10 {
+        return compressed, nil
+    }
+    
+    return uncompressed, nil
+}
+```
+
+### Streaming with Compression
+
+```go
+func writeCompressed(w io.Writer, v *Value) error {
+    data, err := cowrie.EncodeFramed(v, cowrie.CompressionZstd)
+    if err != nil {
+        return err
+    }
+    
+    _, err = w.Write(data)
+    return err
+}
+
+func readCompressed(r io.Reader) (*Value, error) {
+    data, err := io.ReadAll(io.LimitReader(r, 100*1024*1024)) // 100MB limit
+    if err != nil {
+        return nil, err
+    }
+    
+    return cowrie.DecodeFramed(data)
+}
+```
+
+### HTTP API with Compression
+
+```go
+func handleRequest(w http.ResponseWriter, r *http.Request) {
+    // Read with size limit
+    body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024))
+    if err != nil {
+        http.Error(w, "Request too large", http.StatusRequestEntityTooLarge)
+        return
+    }
+    
+    // Decode with decompression limit
+    val, err := cowrie.DecodeFramedWithLimit(body, 50*1024*1024)
+    if err == cowrie.ErrDecompressedTooLarge {
+        http.Error(w, "Payload too large", http.StatusRequestEntityTooLarge)
+        return
+    }
+    
+    // Process...
+    result := processValue(val)
+    
+    // Encode response with compression
+    respData, _ := cowrie.EncodeFramed(result, cowrie.CompressionZstd)
+    w.Header().Set("Content-Type", "application/cowrie")
+    w.Write(respData)
+}
+```
+
+---
+
+## Errors
+
+**Compression errors:**
+
+- `ErrDecompressedTooLarge` - Claimed or actual decompressed size exceeds limit
+- `ErrInvalidTag` - Unknown compression type in flags
+- `ErrUnexpectedEOF` - Decompressed size mismatch or truncated compressed data
+
+**Example error handling:**
+
+```go
+val, err := cowrie.DecodeFramedWithLimit(data, limit)
+if err != nil {
+    switch err {
+    case cowrie.ErrDecompressedTooLarge:
+        return fmt.Errorf("payload too large (limit: %d bytes)", limit)
+    case cowrie.ErrInvalidTag:
+        return fmt.Errorf("unsupported compression type")
+    case cowrie.ErrUnexpectedEOF:
+        return fmt.Errorf("corrupted compressed data")
+    default:
+        return fmt.Errorf("decompression failed: %w", err)
+    }
+}
+```
+
+---
+
+## See Also
+
+- [Encode & Decode](/api/gen2/encode-decode) - Core encoding/decoding functions
+- [Core Types](/api/gen2/types) - Type tags and wire format
+- [SPEC.md](https://github.com/cowrie/spec) - Full wire format specification

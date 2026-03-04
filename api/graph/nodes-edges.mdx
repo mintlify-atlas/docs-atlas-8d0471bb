@@ -1,0 +1,380 @@
+---
+title: 'Nodes and Edges'
+description: 'Core graph primitives: Node and Edge types with labels and properties'
+---
+
+## Overview
+
+Nodes and Edges are the fundamental building blocks of property graphs in Cowrie. They support:
+
+- **String IDs**: Flexible node and edge identifiers (UUIDs, integers, or custom strings)
+- **Labels**: Multiple labels for nodes (e.g., `["Person", "Employee"]`), single type for edges
+- **Properties**: Dictionary-coded key-value pairs for efficient encoding
+- **Wire Formats**: Both Gen1 (simple binary) and Gen2 (dictionary-coded) encodings
+
+<Note>
+Gen2 format uses dictionary coding for property keys, achieving 70-80% size reduction for graphs with repeated schemas.
+</Note>
+
+## Node
+
+### Gen1 Wire Format (Tag 0x10)
+
+```
+Tag(0x10) | id:zigzag-varint | labelLen:varint | labelBytes | propCount:varint | (keyLen:varint | keyBytes | value)*
+```
+
+**Encoding Details:**
+- Node IDs encoded as zigzag-varint (compact signed integers)
+- Single label stored as length-prefixed UTF-8 string
+- Properties use inline key encoding (no dictionary)
+
+### Gen2 Wire Format (Tag 0x35)
+
+```
+Tag(0x35) | idLen:varint | idBytes | labelCount:varint | (labelLen:varint | labelBytes)* | propCount:varint | (dictIdx:varint | value)*
+```
+
+**Encoding Details:**
+- Node IDs stored as length-prefixed UTF-8 strings (flexible identifiers)
+- Multiple labels supported as array of strings
+- Properties use dictionary indices for keys (shared across document)
+
+### Go API
+
+```go
+type NodeEvent struct {
+    Op        Op             // OpUpsert or OpDelete
+    ID        string         // Node identifier (UUID, integer, or string)
+    Labels    []string       // Node labels (e.g., ["Person", "Employee"])
+    Props     map[string]any // Node properties
+    Timestamp int64          // Optional: nanoseconds since epoch
+}
+```
+
+### Construction Examples
+
+<CodeGroup>
+```go Basic Node
+node := &graph.NodeEvent{
+    Op:     graph.OpUpsert,
+    ID:     "person_42",
+    Labels: []string{"Person"},
+    Props: map[string]any{
+        "name": "Alice",
+        "age":  int64(30),
+    },
+}
+
+sw.WriteNode(node)
+```
+
+```go Multi-Label Node
+node := &graph.NodeEvent{
+    Op:     graph.OpUpsert,
+    ID:     "emp_123",
+    Labels: []string{"Person", "Employee", "Manager"},
+    Props: map[string]any{
+        "name":     "Bob",
+        "age":      int64(45),
+        "salary":   int64(120000),
+        "department": "Engineering",
+    },
+}
+```
+
+```go Node Deletion
+node := &graph.NodeEvent{
+    Op: graph.OpDelete,
+    ID: "person_99",
+}
+```
+</CodeGroup>
+
+### Property Value Types
+
+Nodes support all Cowrie value types:
+
+| Type | Go Type | Example |
+|------|---------|---------|
+| Null | `nil` | `nil` |
+| Boolean | `bool` | `true` |
+| Integer | `int64` | `42` |
+| Float | `float64` | `3.14159` |
+| String | `string` | `"Alice"` |
+| Bytes | `[]byte` | `[]byte{0x01, 0x02}` |
+| Array | `[]any` | `[]any{1, 2, 3}` |
+| Object | `map[string]any` | `map[string]any{"nested": true}` |
+
+### Reading Nodes
+
+```go
+sr, _ := graph.NewStreamReader(data)
+
+for {
+    evt, err := sr.Next()
+    if evt == nil || err != nil {
+        break
+    }
+    
+    if evt.Kind == graph.EventNode {
+        node := evt.Node
+        fmt.Printf("Node %s: labels=%v, props=%v\n", 
+            node.ID, node.Labels, node.Props)
+        
+        // Access specific properties
+        if name, ok := node.Props["name"].(string); ok {
+            fmt.Printf("Name: %s\n", name)
+        }
+    }
+}
+```
+
+## Edge
+
+### Gen1 Wire Format (Tag 0x11)
+
+```
+Tag(0x11) | src:zigzag-varint | dst:zigzag-varint | labelLen:varint | labelBytes | propCount:varint | (keyLen:varint | keyBytes | value)*
+```
+
+**Encoding Details:**
+- Source and destination IDs as zigzag-varints
+- Single edge type/label as length-prefixed string
+- Inline property key encoding
+
+### Gen2 Wire Format (Tag 0x36)
+
+```
+Tag(0x36) | srcLen:varint | srcBytes | dstLen:varint | dstBytes | typeLen:varint | typeBytes | propCount:varint | (dictIdx:varint | value)*
+```
+
+**Encoding Details:**
+- Source and destination as length-prefixed strings
+- Edge type stored as string (e.g., `"KNOWS"`, `"WORKS_AT"`)
+- Dictionary-coded property keys
+
+### Go API
+
+```go
+type EdgeEvent struct {
+    Op        Op             // OpUpsert or OpDelete
+    ID        string         // Edge identifier (optional)
+    Label     string         // Edge type/label (e.g., "KNOWS", "WORKS_FOR")
+    FromID    string         // Source node ID
+    ToID      string         // Target node ID
+    Props     map[string]any // Edge properties
+    Timestamp int64          // Optional: nanoseconds since epoch
+}
+```
+
+### Construction Examples
+
+<CodeGroup>
+```go Basic Edge
+edge := &graph.EdgeEvent{
+    Op:     graph.OpUpsert,
+    Label:  "KNOWS",
+    FromID: "person_1",
+    ToID:   "person_2",
+    Props: map[string]any{
+        "since": int64(2020),
+        "strength": 0.85,
+    },
+}
+
+sw.WriteEdge(edge)
+```
+
+```go Edge with ID
+edge := &graph.EdgeEvent{
+    Op:     graph.OpUpsert,
+    ID:     "edge_abc123",
+    Label:  "WORKS_AT",
+    FromID: "person_42",
+    ToID:   "company_1",
+    Props: map[string]any{
+        "since":    int64(2015),
+        "role":     "Senior Engineer",
+        "fulltime": true,
+    },
+}
+```
+
+```go Edge Deletion
+edge := &graph.EdgeEvent{
+    Op:     graph.OpDelete,
+    ID:     "edge_old",
+    Label:  "KNOWS",
+    FromID: "person_1",
+    ToID:   "person_3",
+}
+```
+</CodeGroup>
+
+### Directed vs Undirected
+
+All edges in Cowrie are **directed** by default. To model undirected edges, write two edges:
+
+```go
+// Undirected "FRIENDS" relationship
+sw.WriteEdge(&graph.EdgeEvent{
+    Op:     graph.OpUpsert,
+    Label:  "FRIENDS",
+    FromID: "alice",
+    ToID:   "bob",
+})
+
+sw.WriteEdge(&graph.EdgeEvent{
+    Op:     graph.OpUpsert,
+    Label:  "FRIENDS",
+    FromID: "bob",
+    ToID:   "alice",
+})
+```
+
+### Reading Edges
+
+```go
+sr, _ := graph.NewStreamReader(data)
+
+for {
+    evt, err := sr.Next()
+    if evt == nil || err != nil {
+        break
+    }
+    
+    if evt.Kind == graph.EventEdge {
+        edge := evt.Edge
+        fmt.Printf("Edge %s -> %s [%s]\n", 
+            edge.FromID, edge.ToID, edge.Label)
+        
+        // Access edge properties
+        if weight, ok := edge.Props["weight"].(float64); ok {
+            fmt.Printf("Weight: %.2f\n", weight)
+        }
+    }
+}
+```
+
+## Complete Example: Social Graph
+
+```go
+package main
+
+import (
+    "bytes"
+    "fmt"
+    "github.com/Neumenon/cowrie/graph"
+)
+
+func main() {
+    var buf bytes.Buffer
+    sw := graph.NewStreamWriter(&buf)
+    
+    // Pre-populate dictionaries for efficiency
+    sw.Header().AddLabel("Person")
+    sw.Header().AddLabel("KNOWS")
+    sw.Header().AddField("name")
+    sw.Header().AddField("age")
+    sw.Header().AddField("since")
+    
+    if err := sw.WriteHeader(); err != nil {
+        panic(err)
+    }
+    
+    // Create nodes
+    sw.WriteNode(&graph.NodeEvent{
+        Op:     graph.OpUpsert,
+        ID:     "alice",
+        Labels: []string{"Person"},
+        Props: map[string]any{
+            "name": "Alice",
+            "age":  int64(30),
+        },
+    })
+    
+    sw.WriteNode(&graph.NodeEvent{
+        Op:     graph.OpUpsert,
+        ID:     "bob",
+        Labels: []string{"Person"},
+        Props: map[string]any{
+            "name": "Bob",
+            "age":  int64(35),
+        },
+    })
+    
+    // Create edge
+    sw.WriteEdge(&graph.EdgeEvent{
+        Op:     graph.OpUpsert,
+        Label:  "KNOWS",
+        FromID: "alice",
+        ToID:   "bob",
+        Props: map[string]any{
+            "since": int64(2020),
+        },
+    })
+    
+    sw.Close()
+    
+    // Read back
+    sr, _ := graph.NewStreamReader(buf.Bytes())
+    events, _ := sr.ReadAll()
+    
+    fmt.Printf("Loaded %d events\n", len(events))
+    // Output: Loaded 3 events
+}
+```
+
+## Performance Characteristics
+
+### Dictionary Coding Benefits (Gen2)
+
+For graphs with repeated property schemas:
+
+```go
+// Without dictionary: 1000 nodes × 20 bytes/key = 20KB overhead
+// With dictionary: 10 unique keys × 20 bytes = 200 bytes + 1000 × 1 byte = 1.2KB
+// Savings: 94%
+```
+
+### ID Encoding Comparison
+
+| Format | ID Type | Encoding | Size (typical) |
+|--------|---------|----------|----------------|
+| Gen1 | Integer | Zigzag varint | 1-5 bytes |
+| Gen2 | String | Length + UTF-8 | 5-40 bytes |
+
+<Tip>
+Use Gen1 for numeric node IDs in dense graphs. Use Gen2 for UUID or string-based IDs.
+</Tip>
+
+## Type Tags Reference
+
+| Format | Tag | Name | Encoding |
+|--------|-----|------|----------|
+| Gen1 | 0x10 | Node | id:zigzag + label:string + props:inline |
+| Gen1 | 0x11 | Edge | src:zigzag + dst:zigzag + label:string + props:inline |
+| Gen2 | 0x35 | Node | id:string + labels:array + props:dict-coded |
+| Gen2 | 0x36 | Edge | src:string + dst:string + type:string + props:dict-coded |
+
+## Error Handling
+
+```go
+sw := graph.NewStreamWriter(&buf)
+sw.WriteHeader()
+
+if err := sw.WriteNode(node); err != nil {
+    // Handle encoding errors
+    log.Printf("Failed to write node: %v", err)
+}
+
+if err := sw.Close(); err != nil {
+    // Handle stream finalization errors
+    log.Printf("Failed to close stream: %v", err)
+}
+```
+
+<Warning>
+Always call `Close()` on StreamWriter to write the end-of-stream marker. Otherwise, readers will encounter `ErrUnexpectedEOF`.
+</Warning>

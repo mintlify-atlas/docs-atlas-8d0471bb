@@ -1,80 +1,471 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get started with Cowrie in 5 minutes - encode and decode your first message
 ---
 
-## Get started in three steps
+This quickstart will get you encoding and decoding data with Cowrie in just a few minutes. We'll show examples for all supported languages.
 
-Get your documentation site running locally and make your first customization.
+<Note>
+For installation instructions, see the [Installation](/installation) guide.
+</Note>
 
-### Step 1: Set up your local environment
+## Choose your variant
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+Cowrie has two variants - choose based on your use case:
+
+- **Gen1**: Simple JSON APIs, real-time systems, embedded devices
+- **Gen2**: ML pipelines, logs/events with repeated schemas, graph data
+
+<Tip>
+If you're unsure, start with Gen1. You can always switch to Gen2 later if you need features like dictionary coding or ML types.
+</Tip>
+
+## Gen1 quickstart
+
+Gen1 provides a simple API for encoding and decoding JSON-like data.
+
+<CodeGroup>
+
+```go Go
+package main
+
+import (
+    "fmt"
+    "github.com/phenomenon0/cowrie-final/go/gen1"
+)
+
+func main() {
+    // Encode a map to binary
+    data, err := gen1.Encode(map[string]any{
+        "name": "Alice",
+        "age": 30,
+        "scores": []float64{95.5, 87.2, 92.8},
+    })
+    if err != nil {
+        panic(err)
+    }
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    fmt.Printf("Encoded %d bytes\n", len(data))
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    // Decode back to native types
+    result, err := gen1.Decode(data)
+    if err != nil {
+        panic(err)
+    }
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    // Access decoded data
+    m := result.(map[string]any)
+    fmt.Printf("Name: %s\n", m["name"])
+    fmt.Printf("Age: %d\n", m["age"])
+}
+```
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+```rust Rust
+use cowrie::gen1;
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Encode a value to binary
+    let val = gen1::Value::Object(vec![
+        ("name".to_string(), gen1::Value::String("Alice".to_string())),
+        ("age".to_string(), gen1::Value::Int64(30)),
+        ("scores".to_string(), gen1::Value::Float64Array(vec![95.5, 87.2, 92.8])),
+    ]);
+    
+    let encoded = gen1::encode(&val)?;
+    println!("Encoded {} bytes", encoded.len());
+    
+    // Decode back to native types
+    let decoded = gen1::decode(&encoded)?;
+    
+    if let gen1::Value::Object(map) = decoded {
+        if let Some(gen1::Value::String(name)) = map.iter().find(|(k, _)| k == "name").map(|(_, v)| v) {
+            println!("Name: {}", name);
+        }
+    }
+    
+    Ok(())
+}
+```
 
-### Step 3: Go live
+```python Python
+from cowrie import gen1
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+# Encode a dict to binary
+data = gen1.encode({
+    "name": "Alice",
+    "age": 30,
+    "scores": [95.5, 87.2, 92.8]
+})
+
+print(f"Encoded {len(data)} bytes")
+
+# Decode back to native types
+result = gen1.decode(data)
+
+# Access decoded data
+print(f"Name: {result['name']}")
+print(f"Age: {result['age']}")
+print(f"Scores: {result['scores']}")
+```
+
+```typescript TypeScript
+import { gen1 } from 'cowrie';
+
+// Encode an object to binary
+const data = gen1.encode({
+  name: 'Alice',
+  age: 30,
+  scores: [95.5, 87.2, 92.8]
+});
+
+console.log(`Encoded ${data.length} bytes`);
+
+// Decode back to native types
+const result = gen1.decode(data);
+
+// Access decoded data
+console.log(`Name: ${result.name}`);
+console.log(`Age: ${result.age}`);
+console.log(`Scores: ${result.scores}`);
+```
+
+```c C
+#include <stdio.h>
+#include "cowrie_gen1.h"
+
+int main() {
+    // Create an object
+    cowrie_g1_value_t *obj = cowrie_g1_object(3);
+    cowrie_g1_object_set(obj, "name", cowrie_g1_string("Alice", 5));
+    cowrie_g1_object_set(obj, "age", cowrie_g1_int64(30));
+    
+    // Create a float array
+    double scores[] = {95.5, 87.2, 92.8};
+    cowrie_g1_value_t *scores_val = cowrie_g1_float64_array(scores, 3);
+    cowrie_g1_object_set(obj, "scores", scores_val);
+    
+    // Encode to binary
+    cowrie_g1_buf_t buf;
+    int err = cowrie_g1_encode(obj, &buf);
+    if (err != 0) {
+        fprintf(stderr, "Encode error: %d\n", err);
+        return 1;
+    }
+    
+    printf("Encoded %zu bytes\n", buf.len);
+    
+    // Decode back
+    cowrie_g1_value_t *decoded;
+    err = cowrie_g1_decode(buf.data, buf.len, &decoded);
+    if (err != 0) {
+        fprintf(stderr, "Decode error: %d\n", err);
+        return 1;
+    }
+    
+    // Access decoded data
+    cowrie_g1_value_t *name = cowrie_g1_object_get(decoded, "name");
+    printf("Name: %.*s\n", (int)name->v.str.len, name->v.str.data);
+    
+    // Cleanup
+    cowrie_g1_free(obj);
+    cowrie_g1_free(decoded);
+    cowrie_g1_buf_free(&buf);
+    
+    return 0;
+}
+```
+
+</CodeGroup>
+
+## Gen2 quickstart
+
+Gen2 provides a more powerful API with dictionary coding, compression, and ML types.
+
+<CodeGroup>
+
+```go Go
+package main
+
+import (
+    "fmt"
+    "github.com/phenomenon0/cowrie-final/go/gen2"
+)
+
+func main() {
+    // Build a structured value
+    val := gen2.Object(
+        gen2.Member{Key: "name", Value: gen2.String("Alice")},
+        gen2.Member{Key: "age", Value: gen2.Int64(30)},
+        gen2.Member{Key: "active", Value: gen2.Bool(true)},
+    )
+    
+    // Encode with dictionary coding
+    data, err := gen2.Encode(val)
+    if err != nil {
+        panic(err)
+    }
+    
+    fmt.Printf("Encoded %d bytes\n", len(data))
+    
+    // Decode back
+    result, err := gen2.Decode(data)
+    if err != nil {
+        panic(err)
+    }
+    
+    fmt.Printf("Decoded: %+v\n", result)
+}
+```
+
+```rust Rust
+use cowrie::gen2;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Build a structured value
+    let val = gen2::Value::object(vec![
+        ("name", gen2::Value::String("Alice".into())),
+        ("age", gen2::Value::Int64(30)),
+        ("active", gen2::Value::Bool(true)),
+    ]);
+    
+    // Encode with dictionary coding
+    let encoded = gen2::encode(&val)?;
+    println!("Encoded {} bytes", encoded.len());
+    
+    // Decode back
+    let decoded = gen2::decode(&encoded)?;
+    println!("Decoded: {:?}", decoded);
+    
+    Ok(())
+}
+```
+
+```python Python
+from cowrie import gen2
+
+# Build using from_any helper
+val = gen2.from_any({
+    "name": "Alice",
+    "age": 30,
+    "active": True
+})
+
+# Encode with dictionary coding
+data = gen2.encode(val)
+print(f"Encoded {len(data)} bytes")
+
+# Decode back
+result = gen2.decode(data)
+print(f"Decoded: {result}")
+```
+
+```typescript TypeScript
+import { gen2 } from 'cowrie';
+
+// Build a structured value
+const val = gen2.SJ.object([
+  ['name', gen2.SJ.string('Alice')],
+  ['age', gen2.SJ.int64(30)],
+  ['active', gen2.SJ.bool(true)],
+]);
+
+// Encode with dictionary coding
+const data = gen2.encode(val);
+console.log(`Encoded ${data.length} bytes`);
+
+// Decode back
+const result = gen2.decode(data);
+console.log('Decoded:', result);
+```
+
+```c C
+#include <stdio.h>
+#include "cowrie_gen2.h"
+
+int main() {
+    // Create an object
+    cowrie_g2_value_t *obj = cowrie_g2_object(3);
+    cowrie_g2_object_set(obj, "name", cowrie_g2_string("Alice", 5));
+    cowrie_g2_object_set(obj, "age", cowrie_g2_int64(30));
+    cowrie_g2_object_set(obj, "active", cowrie_g2_bool(1));
+    
+    // Encode with dictionary coding
+    cowrie_g2_buf_t buf;
+    int err = cowrie_g2_encode(obj, &buf);
+    if (err != 0) {
+        fprintf(stderr, "Encode error: %d\n", err);
+        return 1;
+    }
+    
+    printf("Encoded %zu bytes\n", buf.len);
+    
+    // Decode back
+    cowrie_g2_value_t *decoded;
+    err = cowrie_g2_decode(buf.data, buf.len, &decoded);
+    if (err != 0) {
+        fprintf(stderr, "Decode error: %d\n", err);
+        return 1;
+    }
+    
+    printf("Decoded successfully\n");
+    
+    // Cleanup
+    cowrie_g2_free(obj);
+    cowrie_g2_free(decoded);
+    cowrie_g2_buf_free(&buf);
+    
+    return 0;
+}
+```
+
+</CodeGroup>
+
+## Working with numeric arrays
+
+Both Gen1 and Gen2 automatically optimize homogeneous numeric arrays:
+
+<Steps>
+
+<Step title="Create data with numeric arrays">
+  ```python
+  data = {
+      "embedding": [0.1, 0.2, 0.3, 0.4, 0.5],
+      "labels": [1, 0, 1, 1, 0]
+  }
+  ```
+</Step>
+
+<Step title="Encode with proto-tensors">
+  Arrays with 4+ elements of the same numeric type are automatically encoded as proto-tensors for efficiency:
+  
+  ```python
+  encoded = gen1.encode(data)  # Arrays stored as compact binary
+  ```
+</Step>
+
+<Step title="Decode back to native arrays">
+  ```python
+  decoded = gen1.decode(encoded)
+  print(decoded['embedding'])  # [0.1, 0.2, 0.3, 0.4, 0.5]
+  ```
+</Step>
+
+</Steps>
+
+<Tip>
+Proto-tensor encoding reduces array size by up to 30% compared to generic JSON arrays, with no API changes required.
+</Tip>
+
+## Graph data example (Gen2)
+
+Gen2 includes native graph types for GNN workloads:
+
+<CodeGroup>
+
+```go Go
+package main
+
+import (
+    "github.com/phenomenon0/cowrie-final/go/gen2"
+)
+
+func main() {
+    // Create a graph node
+    node := gen2.Node(gen2.NodeConfig{
+        ID:     "person_42",
+        Labels: []string{"Person", "Employee"},
+        Props: map[string]any{
+            "name": "Alice",
+            "age":  30,
+        },
+    })
+    
+    // Create an edge
+    edge := gen2.Edge(gen2.EdgeConfig{
+        From:     "person_42",
+        To:       "company_1",
+        EdgeType: "WORKS_AT",
+        Props: map[string]any{
+            "since": 2020,
+        },
+    })
+    
+    // Encode graph elements
+    nodeData, _ := gen2.Encode(node)
+    edgeData, _ := gen2.Encode(edge)
+}
+```
+
+```python Python
+from cowrie.gen2 import Value
+
+# Create a graph node
+node = Value.node(
+    "person_42",
+    ["Person", "Employee"],
+    {
+        "name": Value.string("Alice"),
+        "age": Value.int64(30)
+    }
+)
+
+# Create an edge
+edge = Value.edge(
+    "person_42",
+    "company_1",
+    "WORKS_AT",
+    {"since": Value.int64(2020)}
+)
+
+# Encode graph elements
+from cowrie import gen2
+node_data = gen2.encode(node)
+edge_data = gen2.encode(edge)
+```
+
+</CodeGroup>
+
+## Compression (Gen2)
+
+Gen2 supports optional compression with gzip or zstd:
+
+<CodeGroup>
+
+```go Go
+// Encode with gzip compression
+options := gen2.EncodeOptions{
+    Compress: true,
+    CompressionType: gen2.CompressionGzip,
+}
+data, err := gen2.EncodeWithOptions(val, options)
+```
+
+```python Python
+# Encode with compression
+data = gen2.encode(val, compress=True, compression='gzip')
+```
+
+```typescript TypeScript
+// Encode with compression
+const data = gen2.encode(val, {
+  compress: true,
+  compressionType: 'gzip'
+});
+```
+
+</CodeGroup>
+
+<Warning>
+Compression adds CPU overhead. Use it for large payloads where network bandwidth is the bottleneck.
+</Warning>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Installation" icon="download" href="/installation">
+    Complete installation guide for all languages
+  </Card>
+  <Card title="API Reference" icon="book" href="/api/gen1/encode-decode">
+    Detailed API documentation and advanced features
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

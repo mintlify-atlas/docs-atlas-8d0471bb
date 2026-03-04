@@ -1,0 +1,389 @@
+---
+title: 'Audio'
+description: 'Native audio encoding in Cowrie for speech and sound processing'
+---
+
+## Overview
+
+Cowrie provides native audio support through the `Audio` type (tag `0x23`). Audio is stored as raw encoded bytes (PCM, Opus, AAC) without base64 encoding, reducing payload size by 33% compared to JSON.
+
+## Audio (TagAudio / 0x23)
+
+The `Audio` type encodes audio with encoding metadata and raw audio data.
+
+### Wire Format
+
+```
+Tag(0x23) | encoding:u8 | sampleRate:u32 LE | channels:u8 | dataLen:varint | data:bytes
+```
+
+- **encoding** (u8): Audio encoding code (see Encodings below)
+- **sampleRate** (u32 LE): Sample rate in Hz (e.g., 44100, 48000) - little-endian
+- **channels** (u8): Number of audio channels (1=mono, 2=stereo, etc.)
+- **dataLen** (varint): Length of audio data in bytes
+- **data** (bytes): Raw audio data in the specified encoding
+
+### Audio Encodings
+
+| Code | Encoding | Description | Use Case |
+|------|----------|-------------|----------|
+| `0x01` | PCM Int16 | Uncompressed 16-bit PCM | High quality, processing |
+| `0x02` | PCM Float32 | Uncompressed 32-bit float PCM | ML inference, processing |
+| `0x03` | Opus | Compressed lossy codec | Speech, streaming |
+| `0x04` | AAC | Compressed lossy codec | Music, general audio |
+
+## Construction
+
+### TypeScript
+
+```typescript
+import { SJ, AudioEncoding, encode, decode } from 'cowrie';
+import * as fs from 'fs';
+
+// Load Opus-encoded audio
+const opusData = fs.readFileSync('speech.opus');
+
+// Create Audio value
+const audio = SJ.audio(
+  AudioEncoding.OPUS,
+  48000,  // 48kHz sample rate
+  1,      // mono
+  new Uint8Array(opusData)
+);
+
+// Encode
+const encoded = encode(audio);
+
+// Decode
+const decoded = decode(encoded);
+const audData = decoded.data as AudioData;
+console.log(audData.encoding);     // AudioEncoding.OPUS
+console.log(audData.sampleRate);   // 48000
+console.log(audData.channels);     // 1
+console.log(audData.data);         // Uint8Array with Opus data
+```
+
+### Python
+
+```python
+from cowrie import encode, decode
+import numpy as np
+
+# Create PCM Float32 audio (1 second of sine wave)
+sample_rate = 44100
+duration = 1.0
+samples = int(sample_rate * duration)
+t = np.linspace(0, duration, samples, False)
+audio_data = np.sin(2 * np.pi * 440 * t).astype(np.float32)
+
+audio = {
+    "type": "audio",
+    "encoding": "pcm_float32",
+    "sample_rate": 44100,
+    "channels": 1,
+    "data": audio_data.tobytes()
+}
+
+# Encode
+encoded = encode(audio)
+
+# Decode
+decoded = decode(encoded)
+print(decoded["sample_rate"], "Hz")
+```
+
+### Go
+
+```go
+import (
+    "os"
+    "github.com/cowrie/cowrie-go/gen2"
+)
+
+// Load Opus file
+opusData, _ := os.ReadFile("speech.opus")
+
+// Create Audio value
+audio := gen2.Audio(gen2.AudioEncodingOpus, 48000, 1, opusData)
+
+// Encode
+encoded := gen2.Encode(audio)
+```
+
+## Data Layout
+
+The audio data field contains **raw audio bytes** in the specified encoding:
+
+### PCM Int16 (0x01)
+- Signed 16-bit integers, little-endian
+- Range: -32768 to 32767
+- Interleaved channels (for stereo: L, R, L, R, ...)
+- Size: `samples × channels × 2 bytes`
+
+Example (1 second stereo @ 44.1kHz):
+```
+Size: 44100 samples × 2 channels × 2 bytes = 176,400 bytes
+Layout: [L0_lo, L0_hi, R0_lo, R0_hi, L1_lo, L1_hi, R1_lo, R1_hi, ...]
+```
+
+### PCM Float32 (0x02)
+- 32-bit IEEE 754 floats, little-endian
+- Range: -1.0 to 1.0 (normalized)
+- Interleaved channels (for stereo: L, R, L, R, ...)
+- Size: `samples × channels × 4 bytes`
+
+Example (1 second mono @ 16kHz):
+```
+Size: 16000 samples × 1 channel × 4 bytes = 64,000 bytes
+Layout: [s0, s1, s2, s3, ...]
+```
+
+### Opus (0x03)
+- Opus-encoded packets
+- Variable bitrate (6-510 kbps)
+- Contains Opus frame data (not Ogg/WebM container)
+- Decoder must handle Opus frame structure
+
+### AAC (0x04)
+- AAC-encoded audio
+- Variable bitrate (typically 128-320 kbps)
+- Contains raw AAC frames (not MP4/M4A container)
+- May include ADTS headers depending on implementation
+
+## Use Cases
+
+### Speech Recognition
+
+```typescript
+// Whisper API request with Opus audio
+const request = SJ.object({
+  "model": SJ.str("whisper-large-v3"),
+  "audio": SJ.audio(AudioEncoding.OPUS, 16000, 1, audioData),
+  "language": SJ.str("en"),
+  "task": SJ.str("transcribe")
+});
+```
+
+### Text-to-Speech Output
+
+```typescript
+// TTS response with PCM Float32
+const response = SJ.object({
+  "text": SJ.str("Hello, world!"),
+  "audio": SJ.audio(AudioEncoding.PCM_FLOAT32, 24000, 1, synthesizedData),
+  "voice": SJ.str("alloy"),
+  "model": SJ.str("tts-1-hd")
+});
+```
+
+### Voice Streaming
+
+```typescript
+// Real-time voice chat chunk
+const chunk = SJ.object({
+  "session_id": SJ.str("sess_abc123"),
+  "sequence": SJ.int(42),
+  "audio": SJ.audio(AudioEncoding.OPUS, 48000, 1, opusChunk),
+  "timestamp_ms": SJ.int(Date.now())
+});
+```
+
+### Audio Classification
+
+```typescript
+// Audio classification input
+const input = SJ.object({
+  "model": SJ.str("audio-classifier-v1"),
+  "audio": SJ.audio(AudioEncoding.PCM_FLOAT32, 16000, 1, audioFeatures),
+  "classes": SJ.array([
+    SJ.str("speech"),
+    SJ.str("music"),
+    SJ.str("noise")
+  ])
+});
+```
+
+## Encoding Selection Guide
+
+### PCM Int16
+- **Best for**: Processing pipelines, compatibility
+- **Pros**: Universal support, easy to process
+- **Cons**: Large size (uncompressed)
+- **Typical size**: 88.2 KB/sec (44.1kHz mono)
+
+### PCM Float32
+- **Best for**: ML inference, high-quality processing
+- **Pros**: Normalized range, better precision
+- **Cons**: 2× larger than Int16
+- **Typical size**: 176.4 KB/sec (44.1kHz mono)
+
+### Opus
+- **Best for**: Speech, real-time communication, streaming
+- **Pros**: Excellent compression, low latency, tuned for voice
+- **Cons**: Lossy compression
+- **Typical size**: 6-20 KB/sec (speech at 24-64 kbps)
+
+### AAC
+- **Best for**: Music, general audio, broad compatibility
+- **Pros**: Good quality/size ratio, widely supported
+- **Cons**: Lossy compression, higher latency than Opus
+- **Typical size**: 16-40 KB/sec (128-320 kbps)
+
+## Performance Comparison
+
+For 10 seconds of speech (16kHz mono):
+
+| Encoding | Raw Size | JSON + base64 | Cowrie | Savings |
+|----------|----------|---------------|--------|---------|
+| PCM Int16 | 320 KB | 427 KB | 320 KB | 25% |
+| PCM Float32 | 640 KB | 853 KB | 640 KB | 25% |
+| Opus (24kbps) | 30 KB | 40 KB | 30 KB | 25% |
+| AAC (128kbps) | 160 KB | 213 KB | 160 KB | 25% |
+
+Cowrie eliminates base64 overhead while preserving all metadata.
+
+## Common Sample Rates
+
+| Rate | Use Case |
+|------|----------|
+| 8000 Hz | Telephony, low-bandwidth voice |
+| 16000 Hz | Speech recognition, voice assistants |
+| 22050 Hz | Low-quality music, podcasts |
+| 24000 Hz | High-quality speech synthesis |
+| 44100 Hz | CD quality, general audio |
+| 48000 Hz | Professional audio, video |
+| 96000 Hz | High-resolution audio |
+
+## Security Limits
+
+| Limit | Default | Description |
+|-------|---------|-------------|
+| MaxBytesLen | 1GB | Maximum audio data size |
+
+Decoders should also validate:
+- Sample rate is reasonable (e.g., 8000-192000 Hz)
+- Channel count is reasonable (e.g., 1-8)
+- Data length is appropriate for encoding/duration
+
+## Working with Audio Data
+
+### Browser (TypeScript)
+
+```typescript
+// Play PCM Float32 audio in browser
+const audData = decoded.data as AudioData;
+const audioCtx = new AudioContext();
+
+// Create buffer
+const buffer = audioCtx.createBuffer(
+  audData.channels,
+  audData.data.length / (4 * audData.channels),
+  audData.sampleRate
+);
+
+// Copy data
+const float32 = new Float32Array(audData.data.buffer);
+for (let ch = 0; ch < audData.channels; ch++) {
+  const channelData = buffer.getChannelData(ch);
+  for (let i = 0; i < channelData.length; i++) {
+    channelData[i] = float32[i * audData.channels + ch];
+  }
+}
+
+// Play
+const source = audioCtx.createBufferSource();
+source.buffer = buffer;
+source.connect(audioCtx.destination);
+source.start();
+```
+
+### Node.js (TypeScript)
+
+```typescript
+import { spawn } from 'child_process';
+
+// Play Opus audio with ffplay
+const audData = decoded.data as AudioData;
+const ffplay = spawn('ffplay', [
+  '-f', 'opus',
+  '-ar', audData.sampleRate.toString(),
+  '-ac', audData.channels.toString(),
+  '-'
+]);
+
+ffplay.stdin.write(Buffer.from(audData.data));
+ffplay.stdin.end();
+```
+
+### Python
+
+```python
+import numpy as np
+import soundfile as sf
+
+# Decode PCM Float32
+aud_data = decoded["data"]
+samples = np.frombuffer(aud_data, dtype=np.float32)
+
+# Reshape for channels
+if decoded["channels"] == 2:
+    samples = samples.reshape(-1, 2)
+
+# Save or process
+sf.write('output.wav', samples, decoded["sample_rate"])
+```
+
+## Duration Calculation
+
+Calculate audio duration from data size:
+
+### PCM Int16
+```
+duration (seconds) = dataLen / (sampleRate × channels × 2)
+```
+
+### PCM Float32
+```
+duration (seconds) = dataLen / (sampleRate × channels × 4)
+```
+
+### Opus/AAC
+Variable bitrate - duration depends on encoding parameters. Must decode to determine exact duration.
+
+## Example: Speech Pipeline
+
+```typescript
+import { SJ, AudioEncoding, encode, decode } from 'cowrie';
+
+// 1. Record audio (PCM Int16, 16kHz mono)
+const recording = recordMicrophone(); // returns Int16Array
+
+// 2. Create Audio value
+const audio = SJ.audio(
+  AudioEncoding.PCM_INT16,
+  16000,
+  1,
+  new Uint8Array(recording.buffer)
+);
+
+// 3. Send to speech recognition
+const request = SJ.object({
+  "audio": audio,
+  "model": SJ.str("whisper-v3"),
+  "language": SJ.str("en")
+});
+
+const encoded = encode(request);
+// Send encoded to API...
+
+// 4. Receive response
+const response = decode(responseBytes);
+const transcript = response.data["transcript"];
+console.log(transcript); // "Hello, world!"
+```
+
+## See Also
+
+- [Tensors](/api/ml/tensors) - Multi-dimensional arrays for ML
+- [Images](/api/ml/images) - Image encoding formats
+- [Wire Format Spec](/concepts/wire-format) - Full protocol details

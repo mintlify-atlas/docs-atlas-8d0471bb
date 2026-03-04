@@ -1,0 +1,193 @@
+---
+title: Introduction
+description: Cowrie is a multi-language binary JSON codec with two variants optimized for different use cases
+---
+
+## What is Cowrie?
+
+Cowrie is a high-performance binary serialization format for JSON-like data structures. It provides compact encoding while maintaining compatibility with standard JSON data models, making it ideal for APIs, ML pipelines, and data-intensive applications.
+
+Unlike text-based JSON, Cowrie uses a binary wire format that reduces payload sizes and improves parsing performance. The format is designed with cross-language compatibility in mind, with complete implementations in Go, Rust, Python, TypeScript, and C.
+
+## Two variants for different needs
+
+Cowrie comes in two variants, each optimized for specific use cases:
+
+<CardGroup cols={2}>
+  <Card title="Gen1" icon="bolt">
+    Lightweight codec with 11 core types and proto-tensor support. Perfect for simple JSON APIs and real-time systems where speed and simplicity matter.
+  </Card>
+  <Card title="Gen2" icon="microchip">
+    Full-featured codec with 18+ types, dictionary coding, compression, and ML extensions. Ideal for repeated schemas, ML pipelines, and graph data.
+  </Card>
+</CardGroup>
+
+### Feature comparison
+
+| Feature | Gen1 | Gen2 |
+|---------|------|------|
+| Core types | 11 | 13+ |
+| ML types | Proto-tensors (arrays) | Tensor, Image, Audio |
+| Dictionary coding | No | Yes |
+| Compression | No | gzip/zstd |
+| Schema fingerprint | No | Yes |
+| Graph types | 6 | 6 (Node, Edge, NodeBatch, EdgeBatch, GraphShard, Adjlist) |
+
+## Key features
+
+### Proto-tensor support
+
+Both Gen1 and Gen2 efficiently encode homogeneous numeric arrays using proto-tensors:
+
+```json
+{
+  "embedding": [0.1, 0.2, 0.3, 0.4, 0.5],
+  "scores": [95, 87, 92, 88]
+}
+```
+
+These arrays are automatically encoded in a compact binary format, reducing size by up to 30% compared to generic JSON arrays.
+
+### Dictionary coding (Gen2)
+
+Gen2 uses dictionary coding to eliminate repeated object keys, providing ~50% size reduction for logs, events, and other data with repeated schemas:
+
+```json
+// Three objects with the same keys
+[
+  {"name": "Alice", "age": 30, "city": "NYC"},
+  {"name": "Bob", "age": 25, "city": "SF"},
+  {"name": "Charlie", "age": 35, "city": "LA"}
+]
+```
+
+In Gen2, the keys `name`, `age`, and `city` are stored once in a dictionary, then referenced by index in each object.
+
+### Graph types
+
+Both variants support native graph data structures for GNN workloads and graph databases:
+
+- **Node**: Graph vertices with ID, labels, and properties
+- **Edge**: Graph edges with source, destination, type, and properties
+- **GraphShard**: Self-contained subgraph with nodes and edges
+- **NodeBatch/EdgeBatch**: Batch operations for streaming
+- **AdjList**: CSR-format adjacency lists
+
+### ML extensions (Gen2)
+
+Gen2 includes dedicated types for machine learning:
+
+- **Tensor**: Multi-dimensional arrays with dtype support (float32, int8, etc.)
+- **Image**: Encoded images (JPEG, PNG, WebP, AVIF, BMP)
+- **Audio**: Audio data (PCM, Opus, AAC)
+- **TensorRef**: References to external tensor stores
+
+## Use cases
+
+<Tabs>
+  <Tab title="APIs & microservices">
+    Use Gen1 for JSON APIs that need binary efficiency without complexity. Cowrie provides 20-30% size reduction with single-pass encoding/decoding.
+
+    ```go
+    data, _ := gen1.Encode(map[string]any{
+        "status": "success",
+        "data": results,
+    })
+    ```
+  </Tab>
+  <Tab title="ML pipelines">
+    Use Gen2 for ML workloads with tensors, images, and embeddings. Native type support eliminates the need for base64 encoding.
+
+    ```python
+    from cowrie import gen2
+
+    val = gen2.from_any({
+        "image": image_bytes,
+        "embedding": [0.1, 0.2, 0.3],
+        "metadata": {"class": "cat"}
+    })
+    data = gen2.encode(val)
+    ```
+  </Tab>
+  <Tab title="Logs & events">
+    Use Gen2 for high-volume logs and events. Dictionary coding saves ~50% space when many records share the same schema.
+
+    ```typescript
+    import { gen2 } from 'cowrie';
+
+    const events = logs.map(log => gen2.SJ.object([
+      ['timestamp', gen2.SJ.int64(log.ts)],
+      ['level', gen2.SJ.string(log.level)],
+      ['message', gen2.SJ.string(log.msg)],
+    ]));
+    ```
+  </Tab>
+  <Tab title="Graph processing">
+    Use Gen2 for GNN training and graph databases. Native graph types eliminate serialization overhead.
+
+    ```rust
+    use cowrie::gen2;
+
+    let node = gen2::Value::node(
+        "person_42",
+        vec!["Person", "Employee"],
+        vec![("name", gen2::Value::String("Alice".into()))]
+    );
+    ```
+  </Tab>
+</Tabs>
+
+## When to use Gen1 vs Gen2
+
+| Use case | Recommended | Why |
+|----------|-------------|-----|
+| Simple JSON APIs | Gen1 | Faster, simpler, smaller code footprint |
+| Repeated schemas (logs, events) | Gen2 | Dictionary coding saves ~50% |
+| ML pipelines (tensors, images) | Gen2 | Native ML type support |
+| Graph data (GNN) | Gen2 | Node, Edge, GraphShard types |
+| Embedded/IoT | Gen1 | Smaller code footprint |
+| Real-time systems | Gen1 | Single-pass, predictable latency |
+
+## Performance
+
+### Payload size comparison
+
+| Payload type | JSON | Gen1 | Gen2 |
+|--------------|------|------|------|
+| Small object (3 fields) | 46 bytes | 35 bytes (76%) | 43 bytes (93%) |
+| Large array (1000 objects) | 48KB | 34KB (70%) | 23KB (47%) |
+| Float array (10K floats) | 86KB | 80KB (93%) | - |
+| Graph shard (100 nodes) | - | - | 10KB |
+
+<Note>
+Gen2 dictionary coding provides the most benefit for repeated schemas - up to 50% size reduction compared to JSON.
+</Note>
+
+## Language support
+
+Cowrie has complete implementations in five languages:
+
+| Language | Gen1 | Gen2 | Status |
+|----------|------|------|--------|
+| Go | ✓ | ✓ | Complete |
+| Rust | ✓ | ✓ | Complete |
+| Python | ✓ | ✓ | Complete |
+| TypeScript | ✓ | ✓ | Complete |
+| C | ✓ | ✓ | Complete |
+
+All implementations:
+- Follow the same wire format specification
+- Support cross-language interoperability
+- Include comprehensive test suites
+- Provide similar APIs for ease of use
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Encode and decode your first message in 5 minutes
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Install Cowrie in your language of choice
+  </Card>
+</CardGroup>

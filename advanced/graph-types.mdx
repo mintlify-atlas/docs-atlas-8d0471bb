@@ -1,0 +1,392 @@
+---
+title: 'Graph Types'
+description: 'Native graph data structures for property graphs and GNN workloads'
+---
+
+Cowrie provides first-class support for graph data through specialized types optimized for property graph databases, GNN (Graph Neural Network) mini-batches, and distributed graph processing.
+
+## Overview
+
+Graph types in Cowrie Gen2 use dictionary-coded property keys for efficient encoding, achieving 70-80% size reduction compared to inline string keys. All graph types share the same dictionary as objects in the same payload.
+
+## Node
+
+Represents a graph node with ID, labels, and properties.
+
+### Wire Format (Tag 0x35)
+
+```
+Tag(0x35) | idLen:varint | idBytes | labelCount:varint | (labelLen:varint | labelBytes)* | propCount:varint | (dictIdx:varint | value)*
+```
+
+### Structure
+
+```go
+type NodeData struct {
+    ID     string            // Unique node identifier
+    Labels []string          // Node labels/types
+    Props  map[string]any    // Dictionary-coded properties
+}
+```
+
+### Example
+
+```go
+import "github.com/Neumenon/cowrie"
+
+// Create a person node
+node := cowrie.Node(
+    "person_42",
+    []string{"Person", "Employee"},
+    map[string]any{
+        "name":   "Alice",
+        "age":    30,
+        "salary": 50000,
+    },
+)
+
+// Encode
+data, err := cowrie.Encode(node)
+
+// Decode
+val, err := cowrie.Decode(data)
+nodeData := val.Node()
+fmt.Println(nodeData.ID)        // person_42
+fmt.Println(nodeData.Labels)    // [Person Employee]
+fmt.Println(nodeData.Props["name"]) // Alice
+```
+
+### Dictionary Efficiency
+
+Property keys are collected into the shared dictionary:
+
+```json
+// Before dictionary coding
+{
+  "id": "person_42",
+  "props": {"name": "Alice", "age": 30, "name": "Bob", "age": 25}
+}
+
+// After dictionary coding (conceptual)
+Dictionary: ["name", "age"]
+Node 1: props[0]=Alice, props[1]=30
+Node 2: props[0]=Bob, props[1]=25
+```
+
+**Size savings**: ~75% for repeated property schemas across multiple nodes.
+
+## Edge
+
+Represents a directed edge between two nodes with type and properties.
+
+### Wire Format (Tag 0x36)
+
+```
+Tag(0x36) | srcLen:varint | srcBytes | dstLen:varint | dstBytes | typeLen:varint | typeBytes | propCount:varint | (dictIdx:varint | value)*
+```
+
+### Structure
+
+```go
+type EdgeData struct {
+    From  string            // Source node ID
+    To    string            // Destination node ID
+    Type  string            // Edge type/label
+    Props map[string]any    // Dictionary-coded properties
+}
+```
+
+### Example
+
+```go
+// Create an employment relationship edge
+edge := cowrie.Edge(
+    "person_42",
+    "company_1",
+    "WORKS_AT",
+    map[string]any{
+        "since": 2020,
+        "role":  "Engineer",
+    },
+)
+
+// Access edge data
+edgeData := edge.Edge()
+fmt.Println(edgeData.From)  // person_42
+fmt.Println(edgeData.To)    // company_1
+fmt.Println(edgeData.Type)  // WORKS_AT
+```
+
+### Use Cases
+
+- **Property Graphs**: Neo4j, Neptune, TigerGraph relationships
+- **Knowledge Graphs**: RDF-like triples with properties
+- **Social Networks**: Follower, friend, and interaction edges
+
+## NodeBatch
+
+Batch of nodes for streaming and bulk operations.
+
+### Wire Format (Tag 0x37)
+
+```
+Tag(0x37) | count:varint | Node[0] | Node[1] | ... | Node[count-1]
+```
+
+### Structure
+
+```go
+type NodeBatchData struct {
+    Nodes []NodeData
+}
+```
+
+### Example
+
+```go
+// Create batch for GNN mini-batch
+nodes := []cowrie.NodeData{
+    {ID: "1", Labels: []string{"Node"}, Props: map[string]any{"x": 0.1}},
+    {ID: "2", Labels: []string{"Node"}, Props: map[string]any{"x": 0.2}},
+    {ID: "3", Labels: []string{"Node"}, Props: map[string]any{"x": 0.3}},
+}
+
+batch := cowrie.NodeBatch(nodes)
+
+// All nodes share the same dictionary
+// Property key "x" is encoded only once in the header
+```
+
+### Use Cases
+
+- **GNN Training**: Mini-batch node features
+- **Bulk Loading**: Efficient database imports
+- **Stream Processing**: Windowed node aggregations
+
+### Performance
+
+- **Shared Dictionary**: Property keys encoded once per batch
+- **Zero-Copy Access**: Direct memory access to node data
+- **Streaming Friendly**: Constant memory overhead
+
+## EdgeBatch
+
+Batch of edges in COO (Coordinate) format.
+
+### Wire Format (Tag 0x38)
+
+```
+Tag(0x38) | count:varint | Edge[0] | Edge[1] | ... | Edge[count-1]
+```
+
+### Structure
+
+```go
+type EdgeBatchData struct {
+    Edges []EdgeData
+}
+```
+
+### Example
+
+```go
+// Create edge batch for graph loading
+edges := []cowrie.EdgeData{
+    {From: "1", To: "2", Type: "EDGE", Props: map[string]any{"weight": 0.85}},
+    {From: "2", To: "3", Type: "EDGE", Props: map[string]any{"weight": 0.72}},
+    {From: "1", To: "3", Type: "EDGE", Props: map[string]any{"weight": 0.91}},
+}
+
+batch := cowrie.EdgeBatch(edges)
+```
+
+### Use Cases
+
+- **Graph Database Bulk Inserts**
+- **GNN Edge Features**: Message passing data
+- **Graph Partitioning**: Streaming edge sets
+
+## GraphShard
+
+Self-contained subgraph with nodes, edges, and metadata.
+
+### Wire Format (Tag 0x39)
+
+```
+Tag(0x39) | nodeCount:varint | Node* | edgeCount:varint | Edge* | metaCount:varint | (dictIdx:varint | value)*
+```
+
+### Structure
+
+```go
+type GraphShardData struct {
+    Nodes    []NodeData        // Nodes in this shard
+    Edges    []EdgeData        // Edges in this shard
+    Metadata map[string]any    // Shard metadata
+}
+```
+
+### Example
+
+```go
+// Create a graph shard for distributed processing
+shard := cowrie.GraphShard(
+    // Nodes
+    []cowrie.NodeData{
+        {ID: "1", Labels: []string{"Node"}, Props: map[string]any{"x": 0.1}},
+        {ID: "2", Labels: []string{"Node"}, Props: map[string]any{"x": 0.2}},
+    },
+    // Edges
+    []cowrie.EdgeData{
+        {From: "1", To: "2", Type: "EDGE", Props: map[string]any{"weight": 0.85}},
+    },
+    // Metadata
+    map[string]any{
+        "version":     1,
+        "partitionId": 42,
+        "timestamp":   1699920000,
+    },
+)
+```
+
+### Use Cases
+
+- **GNN Mini-Batch Checkpointing**: Save/restore training state
+- **Distributed Graph Processing**: Partition graphs across workers
+- **Graph Database Snapshots**: Export subgraphs with metadata
+- **Streaming Graph Partitions**: Process large graphs in chunks
+
+### Dictionary Integration
+
+All property keys from nodes, edges, and metadata are collected into a single dictionary:
+
+```go
+// Dictionary collection process:
+// 1. Traverse all Node.props keys
+// 2. Traverse all Edge.props keys
+// 3. Traverse all GraphShard.metadata keys
+// 4. Add unique keys to dictionary
+```
+
+**Result**: Massive size savings for large graphs with repeated schemas.
+
+## AdjList
+
+Compressed Sparse Row (CSR) adjacency list for efficient graph representation.
+
+### Wire Format (Tag 0x30)
+
+```
+Tag(0x30) | idWidth:u8 | nodeCount:varint | edgeCount:varint | rowOffsets:(nodeCount+1)*varint | colIndices:edgeCount*(4|8 bytes)
+```
+
+### Structure
+
+```go
+type AdjlistData struct {
+    IDWidth    IDWidth     // 1=int32, 2=int64
+    NodeCount  uint64      // Number of nodes
+    EdgeCount  uint64      // Number of edges
+    RowOffsets []uint64    // [NodeCount + 1] offsets
+    ColIndices []byte      // Edge destinations (int32/int64 LE)
+}
+```
+
+### Example
+
+```go
+// Graph: 0 -> 1, 0 -> 2, 1 -> 2
+// CSR format:
+// rowOffsets = [0, 2, 3, 3] (node 0 has edges 0-1, node 1 has edge 2)
+// colIndices = [1, 2, 2]
+
+adjList := cowrie.Adjlist(
+    cowrie.IDWidthInt32,
+    3,    // nodeCount
+    3,    // edgeCount
+    []uint64{0, 2, 3, 3},
+    []byte{1,0,0,0, 2,0,0,0, 2,0,0,0}, // int32 LE
+)
+```
+
+### Use Cases
+
+- **GNN Message Passing**: Efficient neighbor lookups
+- **Graph Algorithms**: BFS, DFS, PageRank
+- **Memory-Efficient Storage**: CSR is ~10x smaller than edge lists
+
+## Performance Characteristics
+
+| Type | Size Overhead | Random Access | Streaming |
+|------|---------------|---------------|-----------|
+| Node | Low | O(1) | Excellent |
+| Edge | Low | O(1) | Excellent |
+| NodeBatch | Very Low | O(n) | Excellent |
+| EdgeBatch | Very Low | O(n) | Excellent |
+| GraphShard | Low | O(n) | Good |
+| AdjList | Very Low | O(log n) | Fair |
+
+## Security Limits
+
+Graph types respect the same security limits as arrays and objects:
+
+```go
+opts := cowrie.DecodeOptions{
+    MaxArrayLen:  100_000_000,  // Max nodes/edges in batch
+    MaxObjectLen: 10_000_000,   // Max properties per node/edge
+    MaxStringLen: 500_000_000,  // Max ID/label length
+}
+
+val, err := cowrie.DecodeWithOptions(data, opts)
+```
+
+See [Security Limits](/advanced/security-limits) for full details.
+
+## Integration with Graph Databases
+
+### Neo4j
+
+```go
+// Export Neo4j subgraph to Cowrie
+shard := cowrie.GraphShard(nodes, edges, map[string]any{
+    "database": "neo4j",
+    "exportedAt": time.Now().Unix(),
+})
+```
+
+### DGL (Deep Graph Library)
+
+```python
+# Convert DGL graph to Cowrie shard
+import cowrie
+
+shard = cowrie.GraphShard(
+    nodes=node_features,
+    edges=edge_index,
+    metadata={"split": "train"}
+)
+```
+
+### PyG (PyTorch Geometric)
+
+```python
+# Save PyG mini-batch as Cowrie
+batch = cowrie.NodeBatch([
+    {"id": str(i), "labels": ["Node"], "props": {"x": x[i].tolist()}}
+    for i in range(len(x))
+])
+```
+
+## Best Practices
+
+1. **Batch Processing**: Use NodeBatch/EdgeBatch for bulk operations
+2. **Dictionary Reuse**: Keep graphs with consistent schemas together
+3. **Partition Metadata**: Include versioning and provenance in GraphShard
+4. **CSR for Read-Heavy**: Use AdjList for algorithms, batches for updates
+5. **Limit Property Size**: Keep node/edge properties under 10KB each
+
+## Related Types
+
+- [ML Types](/advanced/ml-types) - Tensors for node/edge features
+- [Streaming](/advanced/streaming) - Stream graph shards efficiently
+- [Compression](/advanced/compression) - Compress large graph payloads

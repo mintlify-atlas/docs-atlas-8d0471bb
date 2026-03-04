@@ -10,7 +10,7 @@ The Go implementation provides both Gen1 and Gen2 (v2) codecs with full type saf
 ## Installation
 
 ```bash
-go get github.com/phenomenon0/cowrie-final/go
+go get github.com/Neumenon/cowrie
 ```
 
 ## Imports
@@ -19,14 +19,14 @@ go get github.com/phenomenon0/cowrie-final/go
   <Tab title="Gen2 (Full)">
     ```go
     import (
-        "github.com/phenomenon0/cowrie-final/go"  // Gen2 (default)
+        "github.com/Neumenon/cowrie"  // Gen2 (default)
     )
     ```
   </Tab>
   <Tab title="Gen1 (Lightweight)">
     ```go
     import (
-        "github.com/phenomenon0/cowrie-final/go/gen1"
+        "github.com/Neumenon/cowrie/gen1"
     )
     ```
   </Tab>
@@ -69,7 +69,7 @@ if result.Type() == cowrie.TypeObject {
 ### Gen1: Lightweight Encoding
 
 ```go
-import "github.com/phenomenon0/cowrie-final/go/gen1"
+import "github.com/Neumenon/cowrie/gen1"
 
 // Encode any Go value
 data, err := gen1.Encode(map[string]any{
@@ -252,7 +252,7 @@ data, _ := cowrie.Encode(val)
 ### Gen1 Stream Decoder
 
 ```go
-import "github.com/phenomenon0/cowrie-final/go/gen1"
+import "github.com/Neumenon/cowrie/gen1"
 
 dec := gen1.NewStreamDecoder(conn)
 for {
@@ -333,6 +333,37 @@ goVal := cowrie.ToAny(val)
 obj := goVal.(map[string]any)
 ```
 
+### Direct Go Any Encoding
+
+For convenience, you can encode/decode Go `any` values directly without creating `*Value` objects:
+
+```go
+// Encode Go any directly
+data, err := cowrie.EncodeAny(map[string]any{
+    "name":  "Alice",
+    "scores": []float64{1.0, 2.0, 3.0},
+})
+
+// Decode to Go any
+result, err := cowrie.DecodeAny(data)
+obj := result.(map[string]any)
+```
+
+With options:
+
+```go
+opts := cowrie.AnyOptions{
+    Deterministic: true,
+    OmitNull:      false,
+}
+
+data, err := cowrie.EncodeAnyWithOptions(value, opts)
+```
+
+<Note>
+`EncodeAny` internally calls `FromAny` to convert to `*Value`, then encodes. For performance-critical paths, consider using `FromAny` + `Encode` explicitly to reuse Value objects.
+</Note>
+
 ## Error Handling
 
 ```go
@@ -370,7 +401,7 @@ if err != nil {
 
 ## Package Reference
 
-- `github.com/phenomenon0/cowrie-final/go` - Gen2 (Cowrie v2)
-- `github.com/phenomenon0/cowrie-final/go/gen1` - Gen1 (lightweight)
-- `github.com/phenomenon0/cowrie-final/go/graph` - Graph utilities
-- `github.com/phenomenon0/cowrie-final/go/gnn` - GNN helpers
+- `github.com/Neumenon/cowrie` - Gen2 (Cowrie v2)
+- `github.com/Neumenon/cowrie/gen1` - Gen1 (lightweight)
+- `github.com/Neumenon/cowrie/graph` - Graph utilities
+- `github.com/Neumenon/cowrie/gnn` - GNN helpers

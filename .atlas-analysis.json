@@ -1,0 +1,138 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Cowrie",
+  "projectDescription": "Multi-language binary JSON codec with ML extensions and graph data structures",
+  "theme": "sequoia",
+  "primaryColor": "#3B82F6",
+  "lightColor": "#60A5FA",
+  "darkColor": "#1E40AF",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/gen1-vs-gen2",
+              "concepts/wire-format",
+              "concepts/type-system",
+              "concepts/dictionary-coding"
+            ]
+          },
+          {
+            "group": "Language SDKs",
+            "pages": [
+              "sdks/go",
+              "sdks/rust",
+              "sdks/python",
+              "sdks/typescript",
+              "sdks/c"
+            ]
+          },
+          {
+            "group": "Advanced Features",
+            "pages": [
+              "advanced/graph-types",
+              "advanced/ml-types",
+              "advanced/streaming",
+              "advanced/compression",
+              "advanced/security-limits"
+            ]
+          },
+          {
+            "group": "CLI Tool",
+            "pages": [
+              "cli/overview",
+              "cli/encode",
+              "cli/decode",
+              "cli/info"
+            ]
+          },
+          {
+            "group": "Performance",
+            "pages": [
+              "performance/benchmarks",
+              "performance/optimization",
+              "performance/comparison"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Gen1 API",
+            "pages": [
+              "api/gen1/encode-decode",
+              "api/gen1/types",
+              "api/gen1/streaming"
+            ]
+          },
+          {
+            "group": "Gen2 API",
+            "pages": [
+              "api/gen2/encode-decode",
+              "api/gen2/types",
+              "api/gen2/extended-types",
+              "api/gen2/compression",
+              "api/gen2/column-reader"
+            ]
+          },
+          {
+            "group": "Graph API",
+            "pages": [
+              "api/graph/nodes-edges",
+              "api/graph/batches",
+              "api/graph/shards"
+            ]
+          },
+          {
+            "group": "ML API",
+            "pages": [
+              "api/ml/tensors",
+              "api/ml/images",
+              "api/ml/audio"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Gen1: Lightweight binary JSON with proto-tensor support (11 core types)",
+    "Gen2: Full codec with dictionary coding, compression, and ML extensions (18+ types)",
+    "Multi-language SDKs: Go, Rust, Python, TypeScript, C with identical wire format",
+    "Graph data structures: Node, Edge, NodeBatch, EdgeBatch, GraphShard for GNN workloads",
+    "ML types: Native Tensor, Image, Audio types for ML pipelines",
+    "Streaming support: Record-by-record (Gen1) and framed master streams (Gen2)",
+    "Dictionary coding: ~50% size reduction for repeated schemas in Gen2",
+    "Compression: Optional gzip/zstd compression for Gen2",
+    "CLI tool: Command-line utility for encoding, decoding, and inspection",
+    "Security limits: Configurable limits to prevent memory exhaustion"
+  ],
+  "publicApiSurface": [
+    "gen1.Encode(data) / gen1.Decode(data)",
+    "gen2.Encode(value, opts) / gen2.Decode(data, opts)",
+    "gen1.NewStreamDecoder(reader)",
+    "gen2.NewMasterFrame(data)",
+    "gen2.NewColumnReader(data)",
+    "gen2.Node(config) / gen2.Edge(config)",
+    "gen2.GraphShard(nodes, edges, metadata)",
+    "gen2.Tensor(dtype, shape, data)",
+    "gen2.Image(format, width, height, data)",
+    "gen2.Audio(encoding, sampleRate, channels, data)",
+    "cowrie encode [--gen1|--gen2] [--compress=type]",
+    "cowrie decode",
+    "cowrie info"
+  ]
+}
